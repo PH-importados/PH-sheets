@@ -72,6 +72,18 @@ Esta é a regra mais crítica e com maior histórico de erro.
 
 O crédito de ICMS é o valor que o comprador pode abater do ICMS que vai pagar na revenda. Ele existe porque o ICMS é um imposto não-cumulativo — você desconta o que pagou na compra do que deve na venda.
 
+### 3.1.1 Fonte do crédito: valor DESTACADO na nota
+
+O crédito é sempre o ICMS destacado no XML para o item — nunca uma taxa padrão:
+
+| Regime do fornecedor | Campo do XML | Observação |
+|---|---|---|
+| Normal (tag `CST`) | `vICMS` | Já reflete redução de base (20/70) e diferimento parcial (51) |
+| Simples Nacional (tag `CSOSN`) | `vCredICMSSN` | Único crédito que o Simples transfere (LC 123/2006 art. 23). `vICMS` de CSOSN 900 **não** conta |
+| Nenhum dos dois presente | — | Crédito = 0 (na dúvida, não credita) |
+
+Implementação: `extrair_credito_icms()` em `core/processador.py`. A taxa gravada em `cred_pct`/TAXA CRED é a efetiva: `vCred ÷ vProd`. As regras de zeragem abaixo (ST, `CST_SEM_CREDITO`) continuam valendo como proteção adicional.
+
 ### 3.2 Quando o crédito é ZERO
 
 | Condição | Motivo | CST |
@@ -81,7 +93,7 @@ O crédito de ICMS é o valor que o comprador pode abater do ICMS que vai pagar 
 | `CST = 41` | Não tributado — mesmo raciocínio. | 41 |
 | `CST = 50` | Suspensão — tributação suspensa, crédito suspenso junto. | 50 |
 | `CST = 60` | ST anteriormente cobrada — mesmo que ST acima. | 60 |
-| `CST = 102` / `500` | Simples Nacional — regime simplificado, sem crédito de ICMS. | CSOSN |
+| `CSOSN = 102` / `103` / `202` / `203` / `300` / `400` / `500` | Simples Nacional sem permissão de crédito (só 101/201 geram crédito). Lista em `CST_SEM_CREDITO` (`core/processador.py`). | CSOSN |
 
 ### 3.3 Quando o crédito NÃO é zerado
 
@@ -105,36 +117,40 @@ O Art. 433, §2° do RICMS/AL proíbe usar créditos acumulados para compensar o
 ### 3.6 Implementação correta
 
 ```python
+# processador.py — gerar_tabela(): taxa efetiva por item
+cst, v_cred = extrair_credito_icms(imposto, ns)   # vICMS (CST) ou vCredICMSSN (CSOSN)
+cred_pct = round(v_cred / vProd, 4) if vProd > 0 else 0.0
+
 # app.py — _calcular()  (prévia/dashboard)
-# CORRETO:
-if st_u > 0.005 or cst in {'40', '41', '50', '60', '102', '500'}:
+if st_u > 0.005 or cst in CST_SEM_CREDITO:
     cred = 0.0
 else:
-    cred_pct = row.get('cred_pct', P['cred'])
-    cred = round(nf_u * cred_pct, 2)
+    cred = round(nf_u * row.get('cred_pct', 0.0), 2)   # sem taxa → sem crédito
 
-# processador.py — coluna % CRED ICMS (col 13)
-# A coluna armazena o PERCENTUAL por produto (0.04, 0.07, 0.12, 0.19 ou 0.0).
-# NÃO armazena o valor monetário. Cada célula recebe cor conforme paleta §16.
-cred_rate = 0.0 if (st_u > 0.005 or cst in isentos) else row['cred_pct']
-cell.value          = cred_rate      # ex: 0.04
-cell.number_format  = '0.00%'        # exibe "4,00%"
-cell.fill           = cred_fill(cred_rate)  # cor da paleta
+# processador.py — Excel
+# TAXA CRED (col AUDIT_CRED): PERCENTUAL efetivo do produto, editável (ex: 7,00%)
+# CRED ICMS (col M): fórmula com o VALOR negativo, lendo a TAXA CRED da linha
+=IF(OR(ST>0.005, OR(CST="40", CST="41", ...CST_SEM_CREDITO)), 0, -ROUND(NF_U × TAXA_CRED, 2))
 
-# processador.py — fórmula C_ENT (col 15)
-# O crédito é descontado inline na fórmula de custo de entrada:
-=ROUND(C_REAL + ST + ANT + IPI + FRETE + DESP - ROUND(NF_U × CRED%, 2), 2)
-# Nota: H (ANT) NÃO zera o crédito — ANT não está na condição de isenção.
+# C_ENT soma o CRED (já negativo):
+=ROUND(C_REAL + ST + ANT + IPI + FRETE + DESP + CRED, 2)
+# Nota: ANT NÃO zera o crédito — ANT não está na condição de isenção.
 ```
 
-### 3.7 Crédito por origem do produto
+### 3.7 Faixas de referência por origem
 
-| Origem | % Crédito | 1º dígito do CST |
-|--------|-----------|-----------------|
+O sistema **não** escolhe a taxa pela origem — ela vem do valor destacado na nota (§3.1.1). As faixas abaixo são as alíquotas interestaduais de referência e servem apenas para **colorir** a TAXA CRED/CRED ICMS (§16):
+
+| Origem | Alíquota típica | Campo `orig` do ICMS |
+|--------|-----------------|---------------------|
 | Nacional | 19% (AL) / 12% (PE) / 7% (SP) | 0 |
 | Importado / conteúdo importado ≥ 40% | 4% | 1, 2, 3, 6, 7, 8 |
 
-> O percentual padrão configurável é 4% (importado), ajustável no formulário por nota.
+Taxas efetivas diferentes das faixas são normais: base reduzida (CST 20/70), vBC com IPI/frete, desconto, ou Simples com `pCredSN` (1,25%–3,95%).
+
+### 3.8 Por que valor destacado e não lista de códigos
+
+Até 2026-09 o sistema partia de "todo item tem crédito" (`pICMS` do XML ou 4% padrão do formulário) e zerava só uma lista fixa de CSTs. Qualquer código fora da lista ganhava 4% indevidos — foi o caso da NF 875 (Plastropical, Simples CSOSN 103). Também superestimava o crédito com base reduzida (CST 20 usava o `pICMS` cheio) e ignorava o `pCredSN` do Simples (CSOSN 101). O campo "Crédito ICMS" do formulário foi removido.
 
 ---
 
@@ -143,7 +159,7 @@ cell.fill           = cred_fill(cred_rate)  # cor da paleta
 Os passos DEVEM ser executados nesta ordem — dependências entre eles não permitem reordenação.
 
 ```
-ENTRADA: nf_u, st_u, ant_u, ipi_u, cst, qtd, p_atual, params (mult, frete%, desp%, cred%, fed%, icms%, cart%)
+ENTRADA: nf_u, st_u, ant_u, ipi_u, cst, cred_pct (taxa efetiva da NF), qtd, p_atual, params (mult, frete%, desp%, fed%, icms%, cart%)
 
 Passo 1 — CUSTO REAL
     c_real = ROUND(nf_u × mult, 2)
@@ -156,10 +172,11 @@ Passo 3 — DESPESA
     desp = ROUND(c_real × desp%, 2)
 
 Passo 4 — CRÉDITO ICMS
-    SE st_u > 0.005 OU cst IN isentos:
+    SE st_u > 0.005 OU cst IN CST_SEM_CREDITO:
         cred = 0.0
     SENÃO:          ← inclui ANT — ANT não zera o crédito
-        cred = ROUND(nf_u × cred%, 2)
+        cred = ROUND(nf_u × cred_pct, 2)
+        ← cred_pct = ICMS destacado na NF ÷ vProd (0 se nada destacado)
 
 Passo 5 — CUSTO ENTRADA
     c_ent = ROUND(c_real + st_u + ant_u + ipi_u + frete + desp - cred, 2)
@@ -312,8 +329,9 @@ A API tem timeout de 10s. Se falhar:
 | `vProd`   | Valor total da linha = `qCom × vUnCom` | Validação |
 | `vICMSST` | Valor de ICMS-ST total da linha | `st_u` (dividido por `qCom × qtd_emb`) |
 | `vIPI`    | Valor de IPI total da linha | `ipi_u` |
-| `pICMS`   | Alíquota de ICMS (%) | `cred_pct` por produto |
-| `CST`/`CSOSN` | Situação tributária | Zera crédito ICMS se isento |
+| `vICMS`   | ICMS destacado (regime normal, tag `CST`) | `cred_pct = vICMS ÷ vProd` |
+| `vCredICMSSN` | Crédito transferido pelo Simples (tag `CSOSN`) | `cred_pct = vCredICMSSN ÷ vProd` |
+| `CST`/`CSOSN` | Situação tributária | Zera crédito ICMS se em `CST_SEM_CREDITO` |
 
 ### 6.2 Campos do CSV utilizados no processamento
 
@@ -451,7 +469,7 @@ Estas são restrições que o código deve sempre respeitar:
 3. **A API SEFAZ nunca pode travar o processamento** — sempre em try/except com fallback para zero.
 4. **`p_var` nunca pode ser 0** — se não há preço no sistema, usar `arredondar_99(c_real × 2)`.
 5. **Multiplicador aplicado antes de qualquer percentual** — C_REAL = NF_U × MULT é sempre o Passo 1.
-6. **Crédito de ICMS é subtraído** no C_ENT via `ROUND(NF_U × CRED%, 2)` — a coluna CRED armazena o **percentual** (não o valor). A fórmula do C_ENT desconta o crédito inline.
+6. **Crédito de ICMS é subtraído** do C_ENT — a coluna CRED ICMS tem o **valor** negativo `-ROUND(NF_U × TAXA_CRED, 2)`; a coluna TAXA CRED guarda o **percentual** efetivo (editável).
 7. **Federal (varejo), Cartão (varejo) e ICMS Saída (varejo) incidem sobre P_VAR** (preço de venda varejo).
 8. **Federal ATC e ICMS ATC incidem sobre NF_ATC** (custo atacado) — base de cálculo diferente do varejo.
 9. **Cartão ATC incide sobre P_ATC** (preço de venda atacado) — mesma lógica do cartão varejo mas com base atacado.
@@ -460,7 +478,7 @@ Estas são restrições que o código deve sempre respeitar:
 12. **ICMS Saída é ZERO quando há ST** — produto com ST já teve ICMS recolhido na cadeia; na revenda sai sem débito (CST 60 na saída). Aplica-se varejo e atacado.
 13. **Custos NF divididos pela embalagem** — NF_U, ST_U, ANT_U e IPI_U são divididos por qtd_emb. Tudo por UNIDADE vendida.
 14. **Preço do sistema é SEMPRE por unidade** — nunca multiplicar p_sys pela embalagem.
-15. **Crédito de ICMS vem do XML por produto** — pICMS de cada item do XML. Fallback pro parâmetro do formulário se XML não tiver.
+15. **Crédito de ICMS = valor DESTACADO no XML por produto** — `vICMS` (regime normal) ou `vCredICMSSN` (Simples). Sem destaque → 0. Nunca usar taxa padrão/fallback.
 16. **Sem preço real (≤ R$ 0,02), não dividir por embalagem** — p_sys placeholder não permite validar anti-absurdo. EMB=1 é mais seguro.
 17. **Frete CIF = 0%** — se modFrete=0 no XML, o fornecedor paga o frete. Parâmetro do formulário é ignorado.
 18. **API SEFAZ ST não duplica ICMS** — para `tipoImposto='ST'`, `valorIcmsCalculado` já está em `vICMSST` do XML. Apenas `valorFecoepCalculado` é adicionado. Para `tipoImposto='ANT'`, o XML tem zero e toda a soma (ICMS + FECOEP) vai para `vANT`. Ver `merge_impostos_api()` em `processador.py`.
@@ -502,14 +520,15 @@ Preço do sistema (`p_sys`) NÃO é multiplicado — já é por unidade.
 
 ## 11. Crédito de ICMS Automático
 
-O percentual de crédito é extraído do campo `pICMS` de cada item do XML. Cada produto pode ter % diferente na mesma nota (ex: 7% nacionais, 4% importados).
+O crédito vem do **valor destacado** em cada item do XML (§3.1.1). Cada produto pode ter taxa diferente na mesma nota (ex: 7% nacionais, 4% importados, 2,56% Simples).
 
 ```
-SE pICMS > 0 no XML → cred_pct = pICMS / 100 (por produto)
-SENÃO → cred_pct = parâmetro do formulário (fallback)
+CST (regime normal)  → cred_pct = vICMS       / vProd
+CSOSN (Simples)      → cred_pct = vCredICMSSN / vProd
+nada destacado       → cred_pct = 0
 ```
 
-O crédito é gravado como **valor monetário negativo** na coluna `CRED ICMS` (col 13), ex: `-3,12`. A **cor da célula** indica qual percentual foi usado (paleta §16). O valor é calculado como `ROUND(NF_U × cred_pct, 2)` e somado ao C_ENT (como negativo, reduz o custo). A legenda de cores é exibida automaticamente abaixo da tabela no Excel sempre que houver dados na NF.
+A taxa é gravada na coluna `TAXA CRED` (editável) e o crédito como **valor monetário negativo** na coluna `CRED ICMS` (col 13), ex: `-3,12`, calculado por `-ROUND(NF_U × TAXA_CRED, 2)` e somado ao C_ENT. A **cor da célula** indica a faixa mais próxima (paleta §16). A legenda de cores é exibida automaticamente abaixo da tabela no Excel sempre que houver dados na NF.
 
 ---
 
@@ -568,7 +587,7 @@ Se `QTD_EMB = 1` (produto unitário), os valores coincidem com P_ATC e NF_U resp
 | Com ANT | `count(ant_u > 0.005 and st_u <= 0.005)` |
 | Sem Preço no Sistema | `count(p_atual <= 0)` |
 | Embalagens | `count(qtd_emb > 1)` de N |
-| Crédito ICMS | Badges coloridos por faixa (ex: `30× 4%` em laranja, `10× 7%` em orquídea) — paleta §16 |
+| Crédito ICMS | Badges coloridos por faixa (ex: `30× 4%` em laranja, `10× 7%` em orquídea; taxas fora das faixas em cinza, ex: `5× 2,56%`) — paleta §16 |
 | Lucro Estimado | `sum((p_var - c_saida) × qtd)` |
 
 Cards removidos: "Normal" (não relevante), "Valor Total NF" (não batia com XML), "Margem Estimada" (impreciso).
@@ -577,8 +596,8 @@ Cards removidos: "Normal" (não relevante), "Valor Total NF" (não batia com XML
 
 ## 16. Paleta de Cores — Crédito ICMS
 
-A coluna `% CRED ICMS` (col 13) usa cores distintas por faixa de percentual. As cores aparecem:
-- Na **célula individual** da coluna CRED de cada produto (Excel e preview HTML)
+As colunas `CRED ICMS` (col 13) e `TAXA CRED` usam cores distintas por faixa de percentual. A taxa efetiva é associada à **faixa mais próxima** com tolerância de ±0,5 p.p. (`faixa_cred()`), ex: 7,12% → 7%. Fora de qualquer faixa (ex: Simples 2,56%), a célula fica sem cor. As cores aparecem:
+- Na **célula individual** das colunas CRED ICMS / TAXA CRED de cada produto (Excel e preview HTML)
 - Nos **badges do card** "Crédito ICMS" no dashboard
 - Na **legenda automática** abaixo da tabela no Excel (gerada apenas quando há mais de uma faixa na NF)
 
@@ -594,11 +613,9 @@ A coluna `% CRED ICMS` (col 13) usa cores distintas por faixa de percentual. As 
 
 ### 16.1 Legenda automática no Excel
 
-Gerada automaticamente logo abaixo da tabela de dados quando a NF contém **mais de uma faixa** de crédito ICMS. Cada linha da legenda mostra:
+Gerada automaticamente logo abaixo da tabela de dados sempre que houver produtos na NF. Cada linha da legenda mostra uma faixa usada:
 - Swatch colorido com o percentual (ex: `4%` em laranja)
-- Descrição (ex: `4% — Importado`)
-
-Quando a NF tem apenas uma faixa, a legenda é omitida (desnecessária).
+- Descrição (ex: `4% — Importado`), ou `2,56% — destacado na NF` para taxas fora das faixas
 
 ### 16.2 Invariante de cores CRED
 

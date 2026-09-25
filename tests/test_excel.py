@@ -24,7 +24,6 @@ def P():
         'mult':         2.0,
         'frete':        0.10,
         'desp':         0.10,
-        'cred':         0.04,
         'fed':          0.0913,
         'icm':          0.21,
         'cartao':       0.04,
@@ -156,6 +155,20 @@ class TestExcelGeracaoSemErros:
             ws = wb['Precificação']
             assert not ws.cell(3, COL['DESC']).value.startswith('⚠')
             assert ws.cell(3, COL['ST_U']).fill.start_color.rgb != '00FF0000'
+        finally:
+            os.unlink(path)
+
+    @pytest.mark.parametrize("cst", ['103', '203', '300', '400'])
+    def test_formula_cred_zera_csosn_simples_sem_credito(self, P, cst):
+        """Fórmula CRED do Excel deve zerar para CSOSN do Simples sem crédito (NF 875)."""
+        row = _make_full_row(nf_u=0.18, ant_u=0.03, tem_ant=True, cst=cst)
+        dados = ([row], P, '0875')
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+            path = f.name
+        try:
+            salvar_excel_estilizado(dados, path)
+            ws = load_workbook(path)['Precificação']
+            assert f'="{cst}"' in ws.cell(3, COL['CRED']).value
         finally:
             os.unlink(path)
 

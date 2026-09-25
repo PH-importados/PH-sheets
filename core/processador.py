@@ -127,10 +127,38 @@ CRED_LABELS = {
     0.0:  '0% — ST / Isento',
 }
 
+def faixa_cred(pct, tol=0.005):
+    """
+    Faixa de CRED_CORES mais próxima da taxa efetiva (vICMS / vProd), ou None.
+    A taxa efetiva raramente é exata (vBC com IPI/frete, desconto, base reduzida),
+    então a cor/legenda usa a faixa nominal mais próxima dentro de `tol`.
+    """
+    faixa = min(CRED_CORES, key=lambda f: abs(f - pct))
+    return faixa if abs(faixa - pct) <= tol else None
+
+
+def cor_cred(pct, default='FFFFFF'):
+    """Hex da cor da faixa de crédito mais próxima de `pct`."""
+    faixa = faixa_cred(pct)
+    return CRED_CORES[faixa] if faixa is not None else default
+
+
+def _chave_faixa(pct):
+    """Faixa nominal se houver uma próxima, senão a própria taxa (4 casas)."""
+    faixa = faixa_cred(pct)
+    return faixa if faixa is not None else round(pct, 4)
+
+
+def _fmt_taxa(pct):
+    """'7%' para faixas nominais, '2,56%' para taxas efetivas fora das faixas."""
+    if pct in CRED_CORES:
+        return f'{pct*100:.0f}%'
+    return f'{pct*100:.2f}%'.replace('.', ',')
+
+
 def cred_fill(pct):
     """Retorna PatternFill para o percentual de crédito ICMS."""
-    hex_cor = CRED_CORES.get(round(pct, 4), 'FFFFFF')
-    return PatternFill("solid", fgColor=hex_cor)
+    return PatternFill("solid", fgColor=cor_cred(pct))
 
 
 # ─── Descrições dos códigos CST/CSOSN em português ───────────────────────────
@@ -159,6 +187,14 @@ CST_DESCRICOES = {
 }
 
 
+# CST/CSOSN que não geram crédito de ICMS (RULES.md §3.2).
+# Simples Nacional só gera crédito com CSOSN 101/201 (e 900 quando houver pCredSN).
+CST_SEM_CREDITO = frozenset({
+    '40', '41', '50', '60',                        # regime normal: isento/não trib./suspensão/ST
+    '102', '103', '202', '203', '300', '400', '500',  # Simples Nacional sem crédito
+})
+
+
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 def limpar_str(val):
     if pd.isna(val) or str(val).strip() == "":
@@ -176,6 +212,42 @@ def limpar_preco(val):
         return float(str(val).replace('R$', '').replace('.', '').replace(',', '.').strip())
     except:
         return 0.0
+
+
+def extrair_credito_icms(imposto, ns):
+    """
+    Lê o grupo ICMS de um <imposto> e devolve (cst, v_cred).
+
+    v_cred é o crédito de ICMS DESTACADO na nota para o item (valor total, R$):
+      - Regime normal (tag CST):    vICMS         — já considera redução de base (20/70)
+                                                   e diferimento parcial (51)
+      - Simples Nacional (CSOSN):   vCredICMSSN   — único crédito que o Simples transfere
+                                                   (LC 123/2006 art. 23); vICMS de CSOSN
+                                                   900 NÃO gera crédito ao comprador
+    Sem valor destacado → 0.0 (na dúvida, não credita). RULES.md §3.
+    """
+    cst, v_cred = "", 0.0
+    icms_node = imposto.find('.//nfe:ICMS', ns) if imposto is not None else None
+    if icms_node is None:
+        return cst, v_cred
+    for child in icms_node:
+        tag_cst = child.find('nfe:CST', ns)
+        if tag_cst is not None and tag_cst.text:
+            cst = tag_cst.text.strip()
+            campo = 'nfe:vICMS'
+        else:
+            tag_cst = child.find('nfe:CSOSN', ns)
+            if tag_cst is None or not tag_cst.text:
+                continue
+            cst = tag_cst.text.strip()
+            campo = 'nfe:vCredICMSSN'
+        tag_v = child.find(campo, ns)
+        if tag_v is not None and tag_v.text:
+            try:
+                v_cred = max(0.0, float(tag_v.text.strip()))
+            except ValueError:
+                v_cred = 0.0
+    return cst, v_cred
 
 
 def get_xml_text(node, xpath, ns, default=""):
@@ -357,7 +429,6 @@ def gerar_tabela(xml_path, csv_path, fornecedor, nota_ref, params):
         P_MULT     = float(params.get('mult_var',  2.0))
         P_DESP     = float(params.get('desp',      10))   / 100
         P_FRETE    = float(params.get('frete',     10))   / 100
-        P_CRED     = float(params.get('cred_icms', 4))    / 100
         P_FED      = float(params.get('fed',       9.13)) / 100
         P_ICM      = float(params.get('icm',       21))   / 100
         P_CART     = float(params.get('cartao',    4))    / 100
@@ -416,19 +487,7 @@ def gerar_tabela(xml_path, csv_path, fornecedor, nota_ref, params):
             desc_xml = get_xml_text(p, 'nfe:xProd', ns, "SEM DESCRICAO")
             v_st_xml = float(get_xml_text(i, './/nfe:vICMSST', ns, "0"))
 
-            cst = ""
-            p_icms_xml = 0.0
-            icms_node = i.find('.//nfe:ICMS', ns) if i is not None else None
-            if icms_node is not None:
-                for child in icms_node:
-                    tag = child.find('nfe:CST', ns)
-                    if tag is None:
-                        tag = child.find('nfe:CSOSN', ns)
-                    if tag is not None and tag.text is not None:
-                        cst = tag.text.strip()
-                    tag_p = child.find('nfe:pICMS', ns)
-                    if tag_p is not None and tag_p.text is not None:
-                        p_icms_xml = float(tag_p.text.strip())
+            cst, v_cred_xml = extrair_credito_icms(i, ns)
 
             ean_xml = limpar_str(get_xml_text(p, 'nfe:cEAN', ns))
             if not ean_xml or ean_xml.upper() == "SEM GTIN":
@@ -445,7 +504,7 @@ def gerar_tabela(xml_path, csv_path, fornecedor, nota_ref, params):
                 'v_st_xml': v_st_xml,
                 'nf_base':  num_nf,
                 'cst':      cst,
-                'pICMS':    p_icms_xml,
+                'vCredICMS': v_cred_xml,
             })
 
         # Pareia todos os itens do XML com os registros da API de uma vez —
@@ -545,9 +604,11 @@ def gerar_tabela(xml_path, csv_path, fornecedor, nota_ref, params):
             p_sys_val        = float(row['preco_sys']) if pd.notna(row['preco_sys']) else 0.0
             preco_venda_base = round(p_sys_val, 2) if p_sys_val > 0.01 else 0.0
 
-            # Crédito ICMS: usar pICMS do XML se disponível, senão fallback
-            p_icms = float(row['pICMS']) if pd.notna(row['pICMS']) else 0.0
-            cred_pct = p_icms / 100 if p_icms > 0 else P_CRED
+            # Crédito ICMS = valor destacado na NF ÷ valor do produto (taxa efetiva).
+            # Taxa em vez de R$/un para acompanhar a divisão por embalagem e continuar
+            # editável na coluna TAXA CRED do Excel.
+            v_cred   = float(row['vCredICMS']) if pd.notna(row['vCredICMS']) else 0.0
+            cred_pct = round(v_cred / row['vProd'], 4) if row['vProd'] > 0 else 0.0
 
             rows.append({
                 'nf':        row['nf_base'],
@@ -575,7 +636,7 @@ def gerar_tabela(xml_path, csv_path, fornecedor, nota_ref, params):
 
         params_out = {
             'mult': P_MULT, 'frete': P_FRETE, 'desp': P_DESP,
-            'cred': P_CRED, 'fed': P_FED, 'icm': P_ICM, 'cartao': P_CART,
+            'fed': P_FED, 'icm': P_ICM, 'cartao': P_CART,
             'mult_atc': P_MULT_ATC, 'desc_atc': P_DESC_ATC, 'desc_atc_pdv': P_DESC_ATC_PDV,
         }
         return True, (rows, params_out, num_nf)
@@ -660,7 +721,6 @@ def salvar_excel_estilizado(dados, path):
         COL['C_REAL']:  P['mult'],       # col 10 — multiplicador varejo
         COL['FRETE']:   P['frete'],      # col 11
         COL['DESP']:    P['desp'],       # col 12
-        COL['CRED']:    -P['cred'],      # col 13 — negativo (referência visual do padrão)
         COL['FED']:     P['fed'],        # col 16
         COL['CARTAO']:  P['cartao'],     # col 17
         COL['ICMS_S']:  P['icm'],        # col 18
@@ -668,7 +728,7 @@ def salvar_excel_estilizado(dados, path):
         COL['P_ATC_PED']: P['desc_atc'],      # col 26 — desconto pedido (15%)
         COL['P_ATC_PDV']: P['desc_atc_pdv'],  # col 27 — desconto PDV balcão (10%)
     }
-    pct_cols = {COL['FRETE'], COL['DESP'], COL['CRED'], COL['FED'], COL['CARTAO'], COL['ICMS_S'],
+    pct_cols = {COL['FRETE'], COL['DESP'], COL['FED'], COL['CARTAO'], COL['ICMS_S'],
                 COL['P_ATC_PED'], COL['P_ATC_PDV']}
     for c in range(1, TOTAL_COLS + 1):
         val = param_vals.get(c)
@@ -760,7 +820,7 @@ def salvar_excel_estilizado(dados, path):
 
         # AUDIT_CRED — taxa de crédito ICMS por produto, colorida pela origem
         # É também o operando da fórmula CRED: alterar esta célula muda o crédito calculado
-        cst_isento = cst in {'40', '41', '50', '60', '102', '500'}
+        cst_isento = cst in CST_SEM_CREDITO
         cred_rate  = 0.0 if (has_st or cst_isento) else row['cred_pct']
         cell_ac = ws.cell(r, COL['AUDIT_CRED'])
         cell_ac.value          = row['cred_pct']
@@ -784,10 +844,7 @@ def salvar_excel_estilizado(dados, path):
         # A COR da célula indica o percentual de origem (§16 do RULES.md)
         # A FÓRMULA zera automaticamente se ST>0.005 ou CST isento
         # O usuário pode alterar a taxa na coluna TAXA CRED e o crédito recalcula
-        _cst_zero = (
-            f'OR({Oc}{r}="40",{Oc}{r}="41",{Oc}{r}="50",'
-            f'{Oc}{r}="60",{Oc}{r}="102",{Oc}{r}="500")'
-        )
+        _cst_zero = 'OR(' + ','.join(f'{Oc}{r}="{c}"' for c in sorted(CST_SEM_CREDITO)) + ')'
         cell_cred = ws.cell(r, COL['CRED'])
         cell_cred.value = (
             f'=IF(OR({G}{r}>0.005,{_cst_zero}),0,'
@@ -961,7 +1018,8 @@ def salvar_excel_estilizado(dados, path):
             ws.cell(r, COL['ANT_U']).fill = F_RATEIO
 
     # ── Legenda de crédito ICMS (só se houver mais de uma faixa na NF) ────────
-    taxas_usadas = sorted(set(round(row['cred_pct'], 4) for row in rows))
+    # Agrupa pela faixa nominal (4/7/12/19%) quando a taxa efetiva está próxima
+    taxas_usadas = sorted(set(_chave_faixa(row['cred_pct']) for row in rows))
     if taxas_usadas:  # sempre exibe legenda quando há ao menos uma faixa
         leg_row = len(rows) + 4   # 1 linha de gap após os dados
         ws.cell(leg_row, 1).value = 'LEGENDA — CRÉDITO ICMS'
@@ -971,10 +1029,10 @@ def salvar_excel_estilizado(dados, path):
                        end_row=leg_row, end_column=4)
         for i, taxa in enumerate(taxas_usadas):
             lr = leg_row + 1 + i
-            lbl  = CRED_LABELS.get(taxa, f'{taxa*100:.0f}%')
+            lbl  = CRED_LABELS.get(taxa, f'{_fmt_taxa(taxa)} — destacado na NF')
             fill = cred_fill(taxa)
             c1 = ws.cell(lr, 1)
-            c1.value  = f'{taxa*100:.0f}%'
+            c1.value  = _fmt_taxa(taxa)
             c1.fill   = fill
             c1.font   = Font(bold=True)
             c1.border = BORDA
@@ -1067,18 +1125,18 @@ def gerar_dashboard_html(rows_data, lucro_total=0.0, metricas=None, num_nf=None)
     cred_faixas = {}
     for r, m in zip(rows_data, metricas or [{}] * len(rows_data)):
         if m.get('cred', 0) > 0:
-            pct = round(r.get('cred_pct', 0), 4)
+            pct = _chave_faixa(r.get('cred_pct', 0))
             if pct > 0:
                 cred_faixas[pct] = cred_faixas.get(pct, 0) + 1
 
     if cred_faixas:
         badges = []
         for pct, cnt in sorted(cred_faixas.items()):
-            cor = CRED_CORES.get(pct, 'CCCCCC')
+            cor = cor_cred(pct, 'CCCCCC')
             badges.append(
                 f'<span style="background:#{cor};padding:2px 8px;border-radius:12px;'
                 f'font-size:11px;font-weight:700;margin:2px;display:inline-block">'
-                f'{cnt}× {pct*100:.0f}%</span>'
+                f'{cnt}× {_fmt_taxa(pct)}</span>'
             )
         cred_resumo = ' '.join(badges)
     else:

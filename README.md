@@ -48,7 +48,7 @@ python3 app.py
 2. O navegador abrirá automaticamente em `http://127.0.0.1:8080`.
 3. Preencha o **Nome do Fornecedor** e o **Número da Nota**.
 4. Arraste o **XML da NFe** e o **CSV do sistema** para as áreas indicadas.
-5. Ajuste os parâmetros financeiros (multiplicador, impostos, frete, crédito de ICMS).
+5. Ajuste os parâmetros financeiros (multiplicador, impostos, frete). O crédito de ICMS vem da própria nota — não há campo para ele.
 6. Clique em **Gerar Prévia** para visualizar os dados e o dashboard na tela.
 7. Clique em **Baixar Excel** para salvar a planilha estilizada com fórmulas.
 
@@ -76,8 +76,8 @@ Custo Saída   = Custo Real + Federal(9,13%) + Cartão(4%) + ICMS Saída(21%)
 Preço Mín.    = Custo Saída ÷ (1 - Meta%)
 ```
 
-> O **Crédito de ICMS** é variável conforme a origem do produto:
-> - Importado: 4% | SP: 7% | PE: 12% | AL: 19%
+> O **Crédito de ICMS** é o valor **destacado na nota** para cada item: `vICMS` (fornecedor no regime normal) ou `vCredICMSSN` (fornecedor do Simples). Se a nota não destaca ICMS — ex: Simples CSOSN 102/103 — o crédito é zero.
+> As faixas Importado 4% | SP 7% | PE 12% | AL 19% servem só para colorir a coluna. Detalhes em `RULES.md` §3.
 
 #### Produto COM Substituição Tributária (ST)
 ```
