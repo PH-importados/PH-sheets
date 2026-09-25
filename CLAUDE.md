@@ -33,6 +33,9 @@ PH-Sheets/
 │   ├── conftest.py          # Fixtures e fábrica make_row()
 │   ├── test_embalagem.py    # Testes de extrair_qtd_embalagem
 │   ├── test_calcular.py     # Testes de _calcular (regras fiscais)
+│   ├── test_credito.py      # Testes de extrair_credito_icms e faixas de cor
+│   ├── test_excel.py        # Testes de salvar_excel_estilizado
+│   ├── test_sefaz_api.py    # Testes de pareamento ST/ANT com a API SEFAZ
 │   └── test_helpers.py      # Testes de limpar_preco, limpar_str, _arredondar_x9
 ├── requirements.txt
 ├── requirements-dev.txt     # pytest + pytest-cov
@@ -116,7 +119,6 @@ NF_ATC  PREÇO_ATC FED_ATC CARTÃO_ATC ICM_ATC  C_SAÍDA_ATC  MARGEM_ATC  AUDIT_
 | J (C_REAL) | Multiplicador varejo | 2.0 |
 | K (FRETE) | % Frete/logística | 10% |
 | L (DESP) | % Despesas operacionais | 10% |
-| M (CRED) | % Crédito de ICMS | 4% |
 | P (FED) | % Imposto Federal | 9.13% |
 | Q (CARTÃO) | % Taxa cartão | 4% |
 | R (ICMS_S) | % ICMS na venda | 21% |
@@ -137,15 +139,17 @@ Passo 3 — DESPESA (col L)
     = ROUND(C_REAL × DESP$2, 2)
 
 Passo 4 — CRÉDITO ICMS (col M)
-    = IF(ST>0 OR CST IN [40,60,102,500],
+    = IF(ST>0 OR CST IN CST_SEM_CREDITO,
         0,
-        ROUND(NF_U × |CRED$2|, 2))
+        -ROUND(NF_U × TAXA_CRED, 2))
+    ← TAXA_CRED (col AUDIT_CRED) = crédito DESTACADO na NF ÷ vProd
+      (vICMS no regime normal, vCredICMSSN no Simples; sem destaque → 0)
     ← Zerado se há ST ou CST isento
     ← ANT NÃO zera o crédito — ver RULES.md seção 3
 
 Passo 5 — CUSTO ENTRADA (col O)
     = ROUND(C_REAL + ST + ANT + IPI + FRETE + DESP + CRED, 2)
-    (CRED já é negativo na linha 2)
+    (CRED já é negativo)
 
 Passo 6 — PREÇO VAREJO (col W)
     = IF(P_ATUAL > 0,
@@ -213,14 +217,20 @@ Passo 21 — MARGEM ATC PDV (col AF)
        margem real do PDV atacado imediatamente
 ```
 
-### Crédito de ICMS por Origem
+### Crédito de ICMS — valor destacado na NF
 
-| Origem do produto | Crédito |
-|-------------------|---------|
-| Importado | 4% |
-| SP | 7% |
-| PE | 12% |
-| AL (local) | 19% |
+O crédito **sempre** vem do ICMS destacado no XML para o item (`extrair_credito_icms()` em `core/processador.py`):
+
+| Fornecedor | Campo do XML | `cred_pct` |
+|------------|--------------|------------|
+| Regime normal (tag `CST`) | `vICMS` | `vICMS ÷ vProd` |
+| Simples Nacional (tag `CSOSN`) | `vCredICMSSN` | `vCredICMSSN ÷ vProd` (`vICMS` de CSOSN 900 não conta) |
+| Nada destacado | — | `0` |
+
+- Nunca usar taxa padrão/fallback — não existe mais parâmetro de crédito no formulário.
+- ST > 0.005 e `CST_SEM_CREDITO` continuam zerando o crédito como proteção extra.
+- As faixas Importado 4% / SP 7% / PE 12% / AL 19% (`CRED_CORES`) servem só para **cor/legenda**; a taxa efetiva é associada à faixa mais próxima (±0,5 p.p.) por `faixa_cred()`.
+- Regras completas e histórico (bug NF 875, CSOSN 103): `RULES.md` §3.
 
 ### Detecção de Embalagem
 
@@ -365,6 +375,9 @@ tests/
 ├── conftest.py          # fixtures e fábrica make_row()
 ├── test_embalagem.py    # extrair_qtd_embalagem — 4 padrões + anti-absurdo
 ├── test_calcular.py     # _calcular — regras fiscais e fórmulas de precificação
+├── test_credito.py      # extrair_credito_icms — vICMS / vCredICMSSN por CST/CSOSN + faixas de cor
+├── test_excel.py        # salvar_excel_estilizado — geração sem KeyError, fórmulas, cores
+├── test_sefaz_api.py    # parear_impostos_api — ST/ANT, duplicidade, rateio
 └── test_helpers.py      # limpar_preco, limpar_str, _arredondar_x9
 ```
 
@@ -382,7 +395,7 @@ row = {'nf_u': 10.0, 'st_u': 3.0, 'ant_u': 0.0, 'ipi_u': 0.0, ...}
 ```
 
 **2. Zere `cred_pct` quando for isolar outra variável**
-`_calcular` prefere `row['cred_pct']` sobre `P['cred']`. O `make_row` tem `cred_pct=0.04` como default. Se o teste não está testando crédito ICMS, passe `cred_pct=0.0` para evitar que o crédito contamine o expected value.
+`_calcular` lê o crédito só de `row['cred_pct']` (sem ele, crédito = 0). O `make_row` tem `cred_pct=0.04` como default. Se o teste não está testando crédito ICMS, passe `cred_pct=0.0` para evitar que o crédito contamine o expected value.
 
 ```python
 # Testando c_ent sem ruído do crédito
@@ -406,7 +419,7 @@ assert m['margem'] == 0.5                       # NUNCA
 Quando o mesmo comportamento vale para múltiplos inputs (ex: vários CSTs isentos), use parametrize em vez de repetir o teste.
 
 ```python
-@pytest.mark.parametrize("cst", ['40', '41', '50', '60', '102', '500'])
+@pytest.mark.parametrize("cst", ['40', '41', '50', '60', '102', '103', '500'])
 def test_cst_isento_zera_credito(self, P_zero, cst):
     row = make_row(cst=cst, cred_pct=0.10, p_atual=20.0)
     assert _calcular(row, P_zero)['cred'] == 0.0
@@ -418,14 +431,16 @@ def test_cst_isento_zera_credito(self, P_zero, cst):
 |---------|-------------------|
 | Novo padrão regex de embalagem | Positivo (detecta) + negativo (não detecta falso positivo) + anti-absurdo |
 | Nova regra de zeragem de imposto | Testa que zera + testa que outros casos NÃO zeram |
-| Novo CST isento | Adiciona ao `@parametrize` de `test_cst_isento_zera_credito` |
+| Novo CST isento | Adiciona a `CST_SEM_CREDITO` (`core/processador.py`) + ao `@parametrize` de `test_cst_isento_zera_credito` |
+| Novo grupo/campo de ICMS no XML | Caso em `test_credito.py` com o trecho do XML real |
 | Nova fórmula de custo | Testa com valores onde o cálculo manual é trivial (`cred_pct=0.0`, `P_zero`) |
 
 ### Comportamentos documentados pelos testes
 
 - `limpar_preco("12.50")` retorna `1250.0` — ponto é tratado como separador de milhar (formato BR). Valor decimal deve usar vírgula: `"12,50"`.
 - ANT sozinho (`ant_u > 0`, `st_u = 0`) **não** zera crédito ICMS — apenas ST e CSTs isentos zeram.
-- `_calcular` usa `row['cred_pct']` com prioridade sobre `P['cred']`.
+- `_calcular` usa só `row['cred_pct']`; sem ele o crédito é 0 (nunca taxa padrão).
+- Crédito vem do valor destacado: `vICMS` (CST) ou `vCredICMSSN` (CSOSN). CSOSN 900 com só `vICMS` → crédito 0.
 
 ---
 

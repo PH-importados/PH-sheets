@@ -7,7 +7,7 @@ from threading import Timer
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, render_template, request, jsonify, send_file
 
-from core.processador import gerar_tabela, salvar_excel_estilizado, gerar_dashboard_html, CRED_CORES
+from core.processador import gerar_tabela, salvar_excel_estilizado, gerar_dashboard_html, cor_cred, CST_SEM_CREDITO
 
 
 def _arredondar_x9(val):
@@ -29,11 +29,10 @@ def _calcular(row, P):
     frete  = round(c_real * P['frete'], 2)
     desp   = round(c_real * P['desp'], 2)
 
-    # CORREÇÃO: Adicionado CST 41 e 50 conforme RULES.md §3.6
-    if st_u > 0.005 or cst in {'40', '41', '50', '60', '102', '500'}:
+    if st_u > 0.005 or cst in CST_SEM_CREDITO:
         cred = 0.0
     else:
-        cred_pct = row.get('cred_pct', P['cred'])
+        cred_pct = row.get('cred_pct', 0.0)
         cred = round(nf_u * cred_pct, 2)
 
     c_ent = round(c_real + st_u + ant_u + ipi_u + frete + desp - cred, 2)
@@ -168,7 +167,7 @@ def _gerar_tabela_html(rows, metricas):
         for idx, val in enumerate(cells):
             if idx == 11:
                 pct_val = row.get('cred_pct', 0.0) if m['cred'] > 0 else 0.0
-                cor_hex = CRED_CORES.get(round(pct_val, 4), 'FFFFFF')
+                cor_hex = cor_cred(pct_val)
                 display = f"R$ {val:.2f}" if isinstance(val, (int, float)) else str(val)
                 out += f'<td style="background:#{cor_hex};font-weight:600">{display}</td>'
                 continue

@@ -8,7 +8,7 @@ Regras críticas que mais causam regressões:
   1. ST > 0.005  → zera crédito ICMS, ICMS saída e ICMS atacado
   2. ANT sozinho → NÃO zera crédito ICMS (ANT não é ST)
   3. ANT sozinho → REDUZ ICMS saída pelo valor do ANT pago (max 0)
-  4. CSTs isentos (40, 41, 50, 60, 102, 500) → zeram crédito ICMS
+  4. CSTs/CSOSN sem crédito (CST_SEM_CREDITO) → zeram crédito ICMS
   5. p_atual > 0 → usa como preço varejo (não recalcula)
   6. p_atual = 0 → fallback analítico (p_var >= p_min)
 """
@@ -27,13 +27,11 @@ class TestCreditoICMS:
 
     def test_produto_normal_tem_credito(self, P_zero):
         # Produto comum, sem ST, CST 00 → crédito deve ser calculado
-        P_zero['cred'] = 0.10
         row = make_row(nf_u=10.0, cst='00', cred_pct=0.10, p_atual=20.0)
         m = _calcular(row, P_zero)
         assert m['cred'] == pytest.approx(1.0)  # 10.0 × 0.10
 
     def test_st_zera_credito(self, P_zero):
-        P_zero['cred'] = 0.10
         row = make_row(nf_u=10.0, st_u=3.0, cst='00', cred_pct=0.10, p_atual=20.0)
         m = _calcular(row, P_zero)
         assert m['cred'] == 0.0
@@ -43,7 +41,6 @@ class TestCreditoICMS:
         REGRESSÃO CRÍTICA: ANT ≠ ST. Produto com antecipação mas sem ST
         ainda tem direito ao crédito de ICMS. Ver RULES.md §3.
         """
-        P_zero['cred'] = 0.10
         row = make_row(nf_u=10.0, ant_u=2.0, st_u=0.0, cst='00',
                        cred_pct=0.10, p_atual=20.0)
         m = _calcular(row, P_zero)
@@ -51,16 +48,14 @@ class TestCreditoICMS:
             "ANT não deve zerar crédito ICMS — apenas ST e CSTs isentos fazem isso"
         )
 
-    @pytest.mark.parametrize("cst", ['40', '41', '50', '60', '102', '500'])
+    @pytest.mark.parametrize("cst", ['40', '41', '50', '60', '102', '103', '202', '203', '300', '400', '500'])
     def test_cst_isento_zera_credito(self, P_zero, cst):
-        P_zero['cred'] = 0.10
         row = make_row(nf_u=10.0, cst=cst, cred_pct=0.10, p_atual=20.0)
         m = _calcular(row, P_zero)
         assert m['cred'] == 0.0, f"CST {cst} deve zerar crédito ICMS"
 
-    @pytest.mark.parametrize("cst", ['00', '10', '20', '101'])
+    @pytest.mark.parametrize("cst", ['00', '10', '20', '101', '201'])
     def test_cst_tributado_mantem_credito(self, P_zero, cst):
-        P_zero['cred'] = 0.10
         row = make_row(nf_u=10.0, cst=cst, cred_pct=0.10, p_atual=20.0)
         m = _calcular(row, P_zero)
         assert m['cred'] == pytest.approx(1.0), f"CST {cst} não deve zerar crédito"
@@ -141,7 +136,7 @@ class TestCustoEntrada:
         """Teste com todos os componentes ativos simultaneamente."""
         # mult=2, frete=10%, desp=10%, cred=0 (tem ST)
         P = {
-            'mult': 2.0, 'frete': 0.10, 'desp': 0.10, 'cred': 0.10,
+            'mult': 2.0, 'frete': 0.10, 'desp': 0.10,
             'fed': 0.0, 'icm': 0.0, 'cartao': 0.0,
             'mult_atc': 1.0, 'desc_atc': 0.0,
         }
@@ -160,7 +155,6 @@ class TestCustoEntrada:
 
     def test_c_ent_desconta_credito(self, P_zero):
         """Crédito reduz o custo de entrada."""
-        P_zero['cred'] = 0.10
         row = make_row(nf_u=10.0, cred_pct=0.10, p_atual=25.0)
         m = _calcular(row, P_zero)
         # c_real=10, cred=1.0 → c_ent = 10 - 1 = 9.0

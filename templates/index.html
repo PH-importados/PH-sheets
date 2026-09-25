@@ -291,13 +291,6 @@
                     </div>
                 </div>
                 <div class="col-md-4">
-                    <label>Crédito ICMS</label>
-                    <div class="input-group">
-                        <input type="number" step="0.01" class="form-control" name="cred_icms" value="4">
-                        <span class="input-group-text">%</span>
-                    </div>
-                </div>
-                <div class="col-md-4">
                     <label>Imposto Federal</label>
                     <div class="input-group">
                         <input type="number" step="0.01" class="form-control" name="fed" value="9.13">
@@ -425,10 +418,10 @@
               <tr><td><span class="badge-regime" style="background:#FCE4D6;color:#784212">ST</span></td><td>10 / 60</td><td>Substituição Tributária — a indústria ou importador já recolheu o ICMS de toda a cadeia com base em um preço presumido.</td></tr>
               <tr><td><span class="badge-regime" style="background:#FFF3CD;color:#7d6608">ANT</span></td><td>—</td><td>Antecipação Tributária — ocorre quando não há acordo de ST com o estado de origem. O destinatário (você) recolhe ao receber a mercadoria.</td></tr>
               <tr><td><span class="badge-regime" style="background:#e2e8f0;color:#475569">Isento</span></td><td>40 / 41</td><td>Produto isento de ICMS. Nenhum imposto é devido na cadeia.</td></tr>
-              <tr><td><span class="badge-regime" style="background:#e2e8f0;color:#475569">Simples</span></td><td>102 / 500</td><td>Fornecedor no Simples Nacional — regime simplificado sem transferência de crédito de ICMS.</td></tr>
+              <tr><td><span class="badge-regime" style="background:#e2e8f0;color:#475569">Simples</span></td><td>CSOSN 101–900</td><td>Fornecedor no Simples Nacional — só transfere crédito quando a nota destaca <strong>vCredICMSSN</strong> (normalmente CSOSN 101/201).</td></tr>
             </tbody>
           </table>
-          <div class="r-info">O regime é identificado pelo campo <strong>CST</strong> no XML da NFe, combinado com os valores retornados pela API SEFAZ AL.</div>
+          <div class="r-info">O regime é identificado pelo campo <strong>CST</strong> (ou <strong>CSOSN</strong>, fornecedor do Simples) no XML da NFe, combinado com os valores retornados pela API SEFAZ AL.</div>
         </section>
 
         <hr class="r-sep">
@@ -440,7 +433,7 @@
           <ol class="r-steps">
             <li><strong>ST</strong> — se <code>ST unitário &gt; R$ 0,005</code> (valor vindo do XML campo <em>vICMSST</em> + API SEFAZ)</li>
             <li><strong>ANT</strong> — se <code>ANT unitário &gt; R$ 0,005</code> e ST = 0 (valor exclusivo da API SEFAZ, tipo <em>'ANT'</em>)</li>
-            <li><strong>Isento</strong> — se CST for 40, 41, 50, 60, 102 ou 500</li>
+            <li><strong>Isento / sem crédito</strong> — se o CST/CSOSN estiver na lista sem crédito (40, 41, 50, 60 e Simples 102, 103, 202, 203, 300, 400, 500) ou se a nota não destacar ICMS</li>
             <li><strong>Normal</strong> — qualquer produto que não se enquadre nos anteriores</li>
           </ol>
           <div class="r-warn">
@@ -455,6 +448,7 @@
         <section id="r-cred">
           <h5 class="r-titulo">3. Crédito de ICMS — Quando se Aplica</h5>
           <p>O crédito de ICMS é o valor que você pode abater do ICMS que vai pagar na venda. O ICMS é não-cumulativo: você desconta o que pagou na compra do que deve na venda.</p>
+          <div class="r-info"><strong>Regra principal:</strong> o crédito é sempre o valor de ICMS <strong>destacado na nota</strong> para cada item — <strong>vICMS</strong> (regime normal) ou <strong>vCredICMSSN</strong> (Simples Nacional). Se a nota não destaca nada, o crédito é zero. A taxa exibida na coluna TAXA CRED é a efetiva: valor destacado ÷ valor do produto.</div>
 
           <h6 class="r-subtitulo">Quando o crédito é ZERO</h6>
           <table class="r-table">
@@ -463,7 +457,7 @@
               <tr><td>Produto com <strong>ST &gt; 0</strong></td><td>O ICMS já foi pago por toda a cadeia pelo substituto. Sua venda sai sem débito de ICMS — então não há crédito a abater.</td></tr>
               <tr><td>CST <strong>40, 41, 50</strong> (isento/suspenso)</td><td>Sem débito na saída → sem crédito na entrada.</td></tr>
               <tr><td>CST <strong>60</strong> (ST anterior)</td><td>Mesmo caso de ST acima.</td></tr>
-              <tr><td>CST <strong>102 / 500</strong> (Simples Nacional)</td><td>Regime simplificado — o fornecedor não transfere crédito de ICMS.</td></tr>
+              <tr><td>Nota <strong>sem ICMS destacado</strong> (ex: Simples CSOSN 102, 103, 300, 400, 500; diferimento total CST 51)</td><td>Não há imposto na nota para creditar.</td></tr>
             </tbody>
           </table>
 
@@ -478,7 +472,7 @@
           </table>
 
           <div class="r-info">
-            <strong>Exceção — ANT com encerramento:</strong> Alguns produtos específicos têm ANT com encerramento de tributação (ex: calçados em AL — Art. 591-H do RICMS/AL). Nesse caso, funciona como ST e elimina o crédito. O sistema <em>não distingue</em> automaticamente esse caso — se você trabalha com esses produtos, o crédito deve ser zerado manualmente (setar Crédito ICMS = 0% no formulário).
+            <strong>Exceção — ANT com encerramento:</strong> Alguns produtos específicos têm ANT com encerramento de tributação (ex: calçados em AL — Art. 591-H do RICMS/AL). Nesse caso, funciona como ST e elimina o crédito. O sistema <em>não distingue</em> automaticamente esse caso — se você trabalha com esses produtos, o crédito deve ser zerado manualmente (zerar a coluna TAXA CRED na planilha).
           </div>
 
           <h6 class="r-subtitulo">Percentual do Crédito por Origem</h6>
@@ -491,7 +485,7 @@
               <tr><td>AL (local)</td><td>19%</td></tr>
             </tbody>
           </table>
-          <p>O percentual é configurável no campo <strong>"Crédito ICMS"</strong> do formulário — ajuste conforme a origem do fornecedor da nota.</p>
+          <p>O percentual vem da própria nota (valor destacado ÷ valor do produto). As faixas acima são as alíquotas interestaduais de referência e definem a <strong>cor</strong> da coluna TAXA CRED; taxas fora delas (ex: Simples com pCredSN) aparecem sem cor.</p>
         </section>
 
         <hr class="r-sep">
@@ -609,7 +603,7 @@
               <tr><td><span style="display:inline-block;width:80px;height:20px;background:#FFF2CC;border-radius:4px;vertical-align:middle"></span></td><td><strong>Amarelo forte</strong> — Preço Mínimo Viável, Preço ATC e Margem ATC</td></tr>
               <tr><td><span style="display:inline-block;width:80px;height:20px;background:#F3E8FF;border-radius:4px;vertical-align:middle"></span></td><td><strong>Roxo suave</strong> — Todas as demais colunas da faixa atacado (NF ATC, Federal ATC, Cartão ATC, ICMS ATC, C. Saída ATC)</td></tr>
               <tr><td><span style="display:inline-block;width:80px;height:20px;background:#E2EFDA;border-radius:4px;vertical-align:middle"></span></td><td><strong>Verde</strong> — META % (editável por produto na planilha Excel)</td></tr>
-              <tr><td><span style="display:inline-block;width:80px;height:20px;background:#D9D9D9;border-radius:4px;vertical-align:middle"></span></td><td><strong>Cinza</strong> — Colunas de auditoria (P.Unit Sistema e Qtd Embalagem)</td></tr>
+              <tr><td><span style="display:inline-block;width:80px;height:20px;background:#D9D9D9;border-radius:4px;vertical-align:middle"></span></td><td><strong>Cinza</strong> — Colunas de auditoria (P.Unit Sistema e Qtd Embalagem). A coluna TAXA CRED usa a cor da faixa de crédito (4/7/12/19%) mais próxima, ou fica sem cor quando a taxa da nota não bate com nenhuma faixa</td></tr>
             </tbody>
           </table>
         </section>
@@ -652,7 +646,8 @@
               <tr style="background:#E2EFDA"><td>T</td><td>META %</td><td>Editável</td><td>Padrão 15% — editável linha a linha</td></tr>
               <tr class="r-formula" style="background:#dbeafe20"><td>U–X</td><td>PREÇO MÍN, PREÇO ATUAL, PREÇO VAREJO, MARGEM REAL</td><td>Fórmula / CSV</td><td>Preços e margem varejo</td></tr>
               <tr class="r-formula" style="background:#F3E8FF"><td>Y–AE</td><td>NF ATC, PREÇO ATC, FED ATC, CARTÃO ATC, ICMS ATC, C.SAÍDA ATC, MARGEM ATC</td><td>Fórmula</td><td>Bloco completo atacado</td></tr>
-              <tr style="color:#94a3b8"><td>AF–AG</td><td>P.UNIT SISTEMA, QTD EMB</td><td>Auditoria</td><td>Dados brutos para conferência</td></tr>
+              <tr style="color:#94a3b8"><td>AJ–AK</td><td>P.UNIT SISTEMA, QTD EMB</td><td>Auditoria</td><td>Dados brutos para conferência</td></tr>
+              <tr><td>AL</td><td>TAXA CRED</td><td>XML (editável)</td><td>Taxa efetiva de crédito: ICMS destacado ÷ valor do produto. Alterar recalcula o CRED ICMS</td></tr>
             </tbody>
           </table>
           <div class="r-info"><strong>Linha 2 da planilha:</strong> Parâmetros globais editáveis. Alterar qualquer célula recalcula toda a planilha automaticamente (fórmulas reais do Excel — <code>fullCalcOnLoad=True</code>).</div>
@@ -665,6 +660,7 @@
           <h5 class="r-titulo">11. Regras Invariantes — Nunca Devem Ser Quebradas</h5>
           <p>Estas são as restrições fundamentais do sistema. Qualquer alteração de regra deve verificar se estas invariantes continuam sendo respeitadas:</p>
           <ol class="r-steps">
+            <li><strong>Crédito de ICMS vem SEMPRE do valor destacado na nota</strong> — vICMS (regime normal) ou vCredICMSSN (Simples). Sem destaque, crédito zero. Nunca usar taxa padrão.</li>
             <li><strong>ANT não zera o crédito de ICMS</strong> — ANT padrão é diferente de ST. O crédito do ICMS da NF de compra continua existindo normalmente para produtos ANT.</li>
             <li><strong>Threshold &gt; 0,005 em todas as comparações de imposto</strong> — nunca usar <code>&gt; 0</code> diretamente em valores de ST/ANT.</li>
             <li><strong>A API SEFAZ nunca pode travar o processamento</strong> — está sempre em try/catch com fallback para zero.</li>
