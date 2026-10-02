@@ -248,6 +248,33 @@ Se match e qtd > 1:
 
 ---
 
+## Modo Marketplace (Shopee / Mercado Livre)
+
+Fluxo **independente** do varejo/atacado — não alterar `_calcular`, `salvar_excel_estilizado` nem `gerar_dashboard_html` por causa dele. Código em `core/marketplace.py`, tela em `templates/marketplace.html` (`/marketplace`), testes em `tests/test_marketplace.py`. O `index.html` só tem o botão de troca de modo.
+
+Fluxo em 3 passos:
+1. `POST /marketplace/produtos` (XML + CSV + variáveis) → reaproveita `gerar_tabela()` e devolve os produtos da nota em JSON
+2. Usuário marca na tela os produtos que vão para o marketplace
+3. `POST /marketplace/gerar` (JSON com os selecionados) → prévia + dashboard + Excel (abas `Marketplace` e `Faixas`)
+
+Cálculo por produto (`calcular_marketplace`):
+```
+C. ENTRADA  = mesma conta do varejo, com multiplicador próprio (mult_mkt)
+CUSTO BASE  = C. ENTRADA + embalagem de envio
+PREÇO BASE  = preço que dá a margem alvo só com Federal + ICMS (sem taxas de marketplace)
+PREÇO CANAL = P tal que  P − custo_base − taxas(P) − impostos(P) = margem·P
+              taxas dependem da faixa em que o próprio P cai → testa faixa a faixa
+              arredonda p/ cima até X,X9 sem pular para a faixa seguinte
+```
+- Impostos de venda: Federal sobre o preço; ICMS = 0 com ST, e ANT abatido do ICMS (igual ao varejo). Sem taxa de cartão.
+- Faixas em `SHOPEE_FAIXAS` / `ML_FAIXAS` (anotação 2024). ML ≥ R$ 79: sem tarifa fixa, vendedor paga frete = `frete_ml × (1 − desconto da reputação)` (verde 50%, amarela 40%, vermelha 0%).
+- Colunas definidas uma vez em `COLUNAS_MKT` (prévia e Excel usam a mesma lista). Custo em ordem crescente com prefixos `(×) (+) (−) (=)` até `(=) CUSTO ENTRADA` / `(=) CUSTO BASE`; cada taxa/imposto de venda tem coluna própria.
+- Variáveis no **topo da coluna** em que são usadas (Excel: linha 1 grupos, 2 cabeçalhos, **3 variáveis**, dados a partir da 4). Fórmulas apontam para `$COL$3`; Federal/ICMS de Shopee e ML espelham as variáveis da venda base.
+- Excel: preços sugeridos são **valores editáveis**; taxas, impostos, lucro e margem são fórmulas (VLOOKUP nas faixas da aba Faixas).
+- Fora da v1: Amazon e comparação com o preço da concorrência.
+
+---
+
 ## Estrutura da Prévia HTML (primeiros 20 produtos)
 
 A prévia é gerada em `app.py` como HTML inline com **cabeçalho duplo**:
