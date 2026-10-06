@@ -2,16 +2,19 @@
 Modo Marketplace — precificação para Shopee e Mercado Livre.
 
 Módulo independente do fluxo varejo/atacado: reaproveita apenas a leitura
-de XML/CSV (`gerar_tabela`) e a lista `CST_SEM_CREDITO` de processador.py,
-sem alterar nada lá.
+de XML/CSV (`gerar_tabela`) de processador.py, sem alterar nada lá.
+
+As vendas online saem por CNPJ do Simples Nacional: um único % (DAS) sobre
+o preço de venda, sem Federal/ICMS separados e sem crédito de ICMS na entrada.
 
 Fluxo por produto:
-    1. CUSTO ENTRADA  — mesma conta do varejo, com multiplicador próprio
+    1. CUSTO ENTRADA  — NF × multiplicador + ST + ANT + IPI + frete (% do custo real)
     2. CUSTO BASE     — C. ENTRADA + embalagem de envio
-    3. PREÇO BASE     — preço que atinge a margem alvo só com impostos de venda
+    3. PREÇO BASE     — preço que atinge a margem alvo só com Simples + despesa
                         (antes das taxas de marketplace)
     4. PREÇO SHOPEE / PREÇO ML — preço que atinge a margem alvo pagando as
                         taxas da faixa em que o próprio preço cai
+Simples e despesa operacional são % do preço de venda de cada canal.
 """
 import html
 import math
@@ -19,9 +22,6 @@ import math
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-
-from core.processador import CST_SEM_CREDITO
-
 
 # ─── Tabelas de taxas (anotação 2024 — conferir periodicamente) ──────────────
 # (a partir de R$, tarifa fixa R$, comissão %)
@@ -69,9 +69,8 @@ def montar_params(form, frete_pct=None):
     return {
         'mult':      num('mult_mkt', 2.0),
         'frete':     frete_pct if frete_pct is not None else num('frete', 10) / 100,
-        'desp':      num('desp', 10) / 100,
-        'fed':       num('fed', 9.13) / 100,
-        'icm':       num('icm', 20) / 100,
+        'desp':      num('desp_mkt', 5) / 100,
+        'simples':   num('simples', 15) / 100,
         'margem':    num('margem_mkt', 15) / 100,
         'emb':       num('emb_mkt', 0.0),
         'com_ml':    num('com_ml', 16.5) / 100,
@@ -87,33 +86,19 @@ def frete_ml_item(M):
 
 # ─── Custos ──────────────────────────────────────────────────────────────────
 def custo_entrada(row, M):
-    """Mesma conta do C. ENTRADA do varejo, com o multiplicador do marketplace."""
-    nf_u, st_u = row['nf_u'], row['st_u']
-    c_real = round(nf_u * M['mult'], 2)
+    """
+    C. ENTRADA do marketplace. Simples Nacional não aproveita crédito de ICMS;
+    ST e ANT já pagos na entrada entram como custo. Frete sobre o custo real.
+    """
+    c_real = round(row['nf_u'] * M['mult'], 2)
     frete  = round(c_real * M['frete'], 2)
-    desp   = round(c_real * M['desp'], 2)
-    if st_u > 0.005 or str(row['cst']) in CST_SEM_CREDITO:
-        cred = 0.0
-    else:
-        cred = round(nf_u * row.get('cred_pct', 0.0), 2)
-    c_ent = round(c_real + st_u + row['ant_u'] + row['ipi_u'] + frete + desp - cred, 2)
-    return dict(c_real=c_real, frete=frete, desp=desp, cred=cred, c_ent=c_ent)
+    c_ent  = round(c_real + row['st_u'] + row['ant_u'] + row['ipi_u'] + frete, 2)
+    return dict(c_real=c_real, frete=frete, c_ent=c_ent)
 
 
-def impostos_venda(preco, row, M):
-    """Federal + ICMS da venda. ST não paga ICMS; ANT é abatido do ICMS (igual ao varejo)."""
-    fed, icms = impostos_detalhe(preco, row, M)
-    return round(fed + icms, 2)
-
-
-def impostos_detalhe(preco, row, M):
-    """(federal, icms) da venda, cada um arredondado — igual às colunas do Excel."""
-    fed = round(preco * M['fed'], 2)
-    if row['st_u'] > 0.005:
-        icms = 0.0
-    else:
-        icms = round(max(0.0, preco * M['icm'] - row['ant_u']), 2)
-    return fed, icms
+def deducoes_venda(preco, M):
+    """(simples, despesa) da venda, cada um arredondado — igual às colunas do Excel."""
+    return round(preco * M['simples'], 2), round(preco * M['desp'], 2)
 
 
 def _faixa(faixas, preco):
@@ -145,34 +130,20 @@ def taxas_ml(preco, M):
 
 
 # ─── Resolução de preço ──────────────────────────────────────────────────────
-def _resolver(custo, fixo, pct, row, M):
+def _resolver(custo, fixo, pct, M):
     """
-    Preço P tal que  P − custo − fixo − pct·P − impostos(P) = margem·P.
+    Preço P tal que  P − custo − fixo − (pct + simples + desp)·P = margem·P.
     Retorna None se a margem é inatingível (denominador ≤ 0).
     """
-    tem_st = row['st_u'] > 0.005
-    icm = 0.0 if tem_st else M['icm']
-    ant = 0.0 if tem_st else row['ant_u']
-    base = 1 - pct - M['fed'] - M['margem']
-
-    den = base - icm
-    if den > 0:
-        p = (custo + fixo - ant) / den
-        if p > 0 and icm * p >= ant:
-            return p
-    # ICMS da venda menor que o ANT já pago → ICMS saída = 0
-    if base > 0:
-        p = (custo + fixo) / base
-        if icm * p <= ant:
-            return p
-    return None
+    den = 1 - pct - M['simples'] - M['desp'] - M['margem']
+    return (custo + fixo) / den if den > 0 else None
 
 
-def _preco_por_faixas(custo, faixas, row, M):
+def _preco_por_faixas(custo, faixas, M):
     """Acha a faixa em que o próprio preço cai (as taxas dependem do preço)."""
     for i, (lo, fixo, pct) in enumerate(faixas):
         hi = faixas[i + 1][0] if i + 1 < len(faixas) else math.inf
-        p = _resolver(custo, fixo, pct, row, M)
+        p = _resolver(custo, fixo, pct, M)
         if p is None:
             continue
         if p < lo:
@@ -199,24 +170,23 @@ def _arredondar_na_faixa(preco, faixas):
 
 
 _CANAL_VAZIO = dict(preco=0.0, com_pct=0.0, comissao=0.0, tarifa=0.0, frete=0.0,
-                   fed=0.0, icms=0.0, taxas=0.0, impostos=0.0, lucro=0.0, margem=0.0)
+                   simples=0.0, desp=0.0, taxas=0.0, lucro=0.0, margem=0.0)
 
 
-def _canal(preco, custo_base, faixas, row, M, limite_frete=None):
+def _canal(preco, custo_base, faixas, M, limite_frete=None):
     """
     Detalha a venda num canal: comissão (% da faixa), tarifa fixa, frete do
-    vendedor (ML ≥ R$ 79 — ocupa o lugar da tarifa fixa na faixa), federal e ICMS.
+    vendedor (ML ≥ R$ 79 — ocupa o lugar da tarifa fixa na faixa), Simples e despesa.
     """
     _, fixo, pct = _faixa(faixas, preco)
     frete = fixo if limite_frete is not None and preco >= limite_frete else 0.0
     tarifa = 0.0 if frete else fixo
     comissao = round(preco * pct, 2)
-    fed, icms = impostos_detalhe(preco, row, M)
+    simples, desp = deducoes_venda(preco, M)
     taxas = round(comissao + tarifa + frete, 2)
-    impostos = round(fed + icms, 2)
-    lucro = round(preco - custo_base - taxas - impostos, 2)
+    lucro = round(preco - custo_base - taxas - simples - desp, 2)
     return dict(preco=preco, com_pct=pct, comissao=comissao, tarifa=tarifa, frete=frete,
-                fed=fed, icms=icms, taxas=taxas, impostos=impostos, lucro=lucro,
+                simples=simples, desp=desp, taxas=taxas, lucro=lucro,
                 margem=round(lucro / preco, 4) if preco > 0 else 0.0)
 
 
@@ -225,22 +195,22 @@ def calcular_marketplace(row, M):
     ent = custo_entrada(row, M)
     custo_base = round(ent['c_ent'] + M['emb'], 2)
 
-    p_base_raw = _resolver(custo_base, 0.0, 0.0, row, M)
+    p_base_raw = _resolver(custo_base, 0.0, 0.0, M)
     p_base = arredondar_x9_acima(p_base_raw) if p_base_raw else 0.0
-    base = _canal(p_base, custo_base, [(0.0, 0.0, 0.0)], row, M) if p_base else dict(_CANAL_VAZIO)
+    base = _canal(p_base, custo_base, [(0.0, 0.0, 0.0)], M) if p_base else dict(_CANAL_VAZIO)
 
-    sh_raw = _preco_por_faixas(custo_base, SHOPEE_FAIXAS, row, M)
+    sh_raw = _preco_por_faixas(custo_base, SHOPEE_FAIXAS, M)
     if sh_raw is None:
         shopee = dict(_CANAL_VAZIO)
     else:
-        shopee = _canal(_arredondar_na_faixa(sh_raw, SHOPEE_FAIXAS), custo_base, SHOPEE_FAIXAS, row, M)
+        shopee = _canal(_arredondar_na_faixa(sh_raw, SHOPEE_FAIXAS), custo_base, SHOPEE_FAIXAS, M)
 
     fx_ml = faixas_ml(M)
-    ml_raw = _preco_por_faixas(custo_base, fx_ml, row, M)
+    ml_raw = _preco_por_faixas(custo_base, fx_ml, M)
     if ml_raw is None:
         ml = dict(_CANAL_VAZIO)
     else:
-        ml = _canal(_arredondar_na_faixa(ml_raw, fx_ml), custo_base, fx_ml, row, M,
+        ml = _canal(_arredondar_na_faixa(ml_raw, fx_ml), custo_base, fx_ml, M,
                     limite_frete=ML_LIMITE_FRETE)
 
     melhor = MELHOR_SHOPEE if shopee['lucro'] >= ml['lucro'] else MELHOR_ML
@@ -313,23 +283,20 @@ COLUNAS_MKT = [
     ('ANT_U',        '(+) ANT',                'ENT',    FMT_BRL,  None),
     ('IPI_U',        '(+) IPI',                'ENT',    FMT_BRL,  None),
     ('FRETE',        '(+) FRETE',              'ENT',    FMT_BRL,  ('param', 'frete', FMT_PCT)),
-    ('DESP',         '(+) DESPESA',            'ENT',    FMT_BRL,  ('param', 'desp', FMT_PCT)),
-    ('TAXA_CRED',    'TAXA CRED ICMS',         'ENT',    FMT_PCT,  ('texto', 'da NF')),
-    ('CRED',         '(−) CRED ICMS',          'ENT',    FMT_BRL,  None),
     ('C_ENT',        '(=) CUSTO ENTRADA',      'ENT',    FMT_BRL,  None),
     ('EMB',          '(+) EMBALAGEM',          'ENT',    FMT_BRL,  ('param', 'emb', FMT_BRL)),
     ('C_BASE',       '(=) CUSTO BASE',         'ENT',    FMT_BRL,  None),
     ('MARGEM_ALVO',  'MARGEM ALVO',            'BASE',   FMT_PCT,  ('param', 'margem', FMT_PCT)),
     ('P_BASE',       'PREÇO BASE',             'BASE',   FMT_BRL,  None),
-    ('B_FED',        '(−) FEDERAL',            'BASE',   FMT_BRL,  ('param', 'fed', FMT_PCT)),
-    ('B_ICMS',       '(−) ICMS VENDA',         'BASE',   FMT_BRL,  ('param', 'icm', FMT_PCT)),
+    ('B_SIMPLES',    '(−) SIMPLES',            'BASE',   FMT_BRL,  ('param', 'simples', FMT_PCT)),
+    ('B_DESP',       '(−) DESPESA',            'BASE',   FMT_BRL,  ('param', 'desp', FMT_PCT)),
     ('B_LUCRO',      '(=) LUCRO/UN',           'BASE',   FMT_BRL,  None),
     ('SH_PRECO',     'PREÇO SHOPEE',           'SHOPEE', FMT_BRL,  None),
     ('SH_COM_PCT',   'COMISSÃO %',             'SHOPEE', FMT_PCT,  ('texto', 'faixa')),
     ('SH_COM',       '(−) COMISSÃO',           'SHOPEE', FMT_BRL,  None),
     ('SH_TARIFA',    '(−) TARIFA FIXA',        'SHOPEE', FMT_BRL,  ('texto', 'faixa')),
-    ('SH_FED',       '(−) FEDERAL',            'SHOPEE', FMT_BRL,  ('link', 'B_FED')),
-    ('SH_ICMS',      '(−) ICMS VENDA',         'SHOPEE', FMT_BRL,  ('link', 'B_ICMS')),
+    ('SH_SIMPLES',   '(−) SIMPLES',            'SHOPEE', FMT_BRL,  ('link', 'B_SIMPLES')),
+    ('SH_DESP',      '(−) DESPESA',            'SHOPEE', FMT_BRL,  ('link', 'B_DESP')),
     ('SH_LUCRO',     '(=) LUCRO/UN',           'SHOPEE', FMT_BRL,  None),
     ('SH_MARGEM',    'MARGEM',                 'SHOPEE', FMT_PCT,  None),
     ('ML_PRECO',     'PREÇO ML',               'ML',     FMT_BRL,  None),
@@ -338,8 +305,8 @@ COLUNAS_MKT = [
     ('ML_TARIFA',    '(−) TARIFA FIXA',        'ML',     FMT_BRL,  ('texto', 'faixa')),
     ('ML_FRETE_BASE', 'FRETE BASE (≥ R$ 79)',  'ML',     FMT_BRL,  ('param', 'frete_ml', FMT_BRL)),
     ('ML_FRETE',     '(−) FRETE ML',           'ML',     FMT_BRL,  ('param', 'desc_rep', FMT_PCT)),
-    ('ML_FED',       '(−) FEDERAL',            'ML',     FMT_BRL,  ('link', 'B_FED')),
-    ('ML_ICMS',      '(−) ICMS VENDA',         'ML',     FMT_BRL,  ('link', 'B_ICMS')),
+    ('ML_SIMPLES',   '(−) SIMPLES',            'ML',     FMT_BRL,  ('link', 'B_SIMPLES')),
+    ('ML_DESP',      '(−) DESPESA',            'ML',     FMT_BRL,  ('link', 'B_DESP')),
     ('ML_LUCRO',     '(=) LUCRO/UN',           'ML',     FMT_BRL,  None),
     ('ML_MARGEM',    'MARGEM',                 'ML',     FMT_PCT,  None),
     ('MELHOR',       'MELHOR CANAL',           'FIM',    None,     None),
@@ -348,7 +315,7 @@ COL_MKT = {c[0]: i for i, c in enumerate(COLUNAS_MKT, start=1)}
 _COR_GRUPO = {g: cor for g, _, cor in GRUPOS_MKT}
 
 # Colunas que o usuário pode editar por produto no Excel
-EDITAVEIS_MKT = {'TAXA_CRED', 'MARGEM_ALVO', 'SH_PRECO', 'ML_PRECO', 'ML_FRETE_BASE'}
+EDITAVEIS_MKT = {'MARGEM_ALVO', 'SH_PRECO', 'ML_PRECO', 'ML_FRETE_BASE'}
 # Colunas em negrito (resultados de cada etapa)
 DESTAQUE_MKT = {'C_ENT', 'C_BASE', 'P_BASE', 'B_LUCRO', 'SH_PRECO', 'SH_LUCRO', 'SH_MARGEM',
                 'ML_PRECO', 'ML_LUCRO', 'ML_MARGEM', 'MELHOR'}
@@ -384,17 +351,16 @@ def _valores_linha(row, m):
         'NF': row['nf'], 'DESC': row['desc'][:55], 'REF': row['ref'], 'SKU': row['sku'],
         'QTD': int(row['qtd']), 'CST': row['cst'],
         'NF_U': row['nf_u'], 'C_REAL': m['c_real'], 'ST_U': row['st_u'], 'ANT_U': row['ant_u'],
-        'IPI_U': row['ipi_u'], 'FRETE': m['frete'], 'DESP': m['desp'],
-        'TAXA_CRED': row['cred_pct'], 'CRED': m['cred'],
+        'IPI_U': row['ipi_u'], 'FRETE': m['frete'],
         'C_ENT': m['c_ent'], 'EMB': m['emb'], 'C_BASE': m['custo_base'],
         'MARGEM_ALVO': m['margem_alvo'], 'P_BASE': m['p_base'],
-        'B_FED': b['fed'], 'B_ICMS': b['icms'], 'B_LUCRO': b['lucro'],
+        'B_SIMPLES': b['simples'], 'B_DESP': b['desp'], 'B_LUCRO': b['lucro'],
         'SH_PRECO': sh['preco'], 'SH_COM_PCT': sh['com_pct'], 'SH_COM': sh['comissao'],
-        'SH_TARIFA': sh['tarifa'], 'SH_FED': sh['fed'], 'SH_ICMS': sh['icms'],
+        'SH_TARIFA': sh['tarifa'], 'SH_SIMPLES': sh['simples'], 'SH_DESP': sh['desp'],
         'SH_LUCRO': sh['lucro'], 'SH_MARGEM': sh['margem'],
         'ML_PRECO': ml['preco'], 'ML_COM_PCT': ml['com_pct'], 'ML_COM': ml['comissao'],
         'ML_TARIFA': ml['tarifa'], 'ML_FRETE_BASE': m['frete_ml_base'], 'ML_FRETE': ml['frete'],
-        'ML_FED': ml['fed'], 'ML_ICMS': ml['icms'], 'ML_LUCRO': ml['lucro'], 'ML_MARGEM': ml['margem'],
+        'ML_SIMPLES': ml['simples'], 'ML_DESP': ml['desp'], 'ML_LUCRO': ml['lucro'], 'ML_MARGEM': ml['margem'],
         'MELHOR': m['melhor'],
     }
 
@@ -450,7 +416,7 @@ def gerar_tabela_marketplace_html(rows, metricas, M):
             if chave in ('SH_MARGEM', 'ML_MARGEM'):
                 estilo += f'color:{"#15803d" if v >= m["margem_alvo"] - 1e-3 else "#dc2626"};'
                 txt = _pct(v)
-            elif chave in ('ST_U', 'ANT_U', 'IPI_U', 'CRED', 'ML_FRETE', 'SH_TARIFA', 'ML_TARIFA') and v < 0.005:
+            elif chave in ('ST_U', 'ANT_U', 'IPI_U', 'ML_FRETE', 'SH_TARIFA', 'ML_TARIFA') and v < 0.005:
                 txt = '-'
             elif fmt is None:
                 txt = html.escape(str(v))
@@ -535,7 +501,7 @@ def gerar_dashboard_marketplace_html(rows, metricas, M, num_nf=None):
     alertas = []
     inviaveis = [r['desc'][:50] for r, m in zip(rows, metricas) if m['inviavel']]
     if inviaveis:
-        alertas.append('Margem alvo inatingível (taxas + impostos + margem ≥ 100%): '
+        alertas.append('Margem alvo inatingível (taxas + Simples + despesa + margem ≥ 100%): '
                        + ', '.join(html.escape(d) for d in inviaveis))
     if com_frete:
         alertas.append(f'{com_frete} produto(s) ficam a partir de R$ 79 no Mercado Livre e pagam frete '
@@ -619,44 +585,33 @@ def _formulas_linha(c, v, t):
     Fórmulas de uma linha. `c` = célula da coluna nesta linha, `v` = célula da
     variável no topo da coluna (linha 3, absoluta), `t` = tabelas de faixas.
     """
-    st = f'{c["ST_U"]}>0.005'
-    cst_sem = ','.join(f'{c["CST"]}="{cst}"' for cst in sorted(CST_SEM_CREDITO))
-
-    def icms(preco):
-        return f'=ROUND(IF({st},0,MAX(0,{preco}*{v["B_ICMS"]}-{c["ANT_U"]})),2)'
-
-    # Preço base: margem alvo só com impostos de venda (mesma lógica de _resolver)
-    fed, icm, marg = v['B_FED'], v['B_ICMS'], c['MARGEM_ALVO']
-    den_icm = f'(1-{fed}-{icm}-{marg})'
-    den     = f'(1-{fed}-{marg})'
-    cand    = f'({c["C_BASE"]}-{c["ANT_U"]})/{den_icm}'
-    bruto   = (f'IF({st},{c["C_BASE"]}/{den},'
-               f'IF(AND({den_icm}>0,{icm}*{cand}>={c["ANT_U"]}),{cand},{c["C_BASE"]}/{den}))')
+    simp, desp, marg = v['B_SIMPLES'], v['B_DESP'], c['MARGEM_ALVO']
+    # Preço base: margem alvo só com Simples + despesa (mesma conta de _resolver)
+    den = f'(1-{simp}-{desp}-{marg})'
 
     sh, ml = c['SH_PRECO'], c['ML_PRECO']
     return {
         'C_REAL':  f'=ROUND({c["NF_U"]}*{v["C_REAL"]},2)',
         'FRETE':   f'=ROUND({c["C_REAL"]}*{v["FRETE"]},2)',
-        'DESP':    f'=ROUND({c["C_REAL"]}*{v["DESP"]},2)',
-        'CRED':    f'=IF(OR({st},{cst_sem}),0,ROUND({c["NF_U"]}*{c["TAXA_CRED"]},2))',
         'C_ENT':   (f'=ROUND({c["C_REAL"]}+{c["ST_U"]}+{c["ANT_U"]}+{c["IPI_U"]}'
-                    f'+{c["FRETE"]}+{c["DESP"]}-{c["CRED"]},2)'),
+                    f'+{c["FRETE"]},2)'),
         'EMB':     f'={v["EMB"]}',
         'C_BASE':  f'=ROUND({c["C_ENT"]}+{c["EMB"]},2)',
         'MARGEM_ALVO': f'={v["MARGEM_ALVO"]}',
         # Arredonda para cima até X,X9 — mesmo que arredondar_x9_acima()
-        'P_BASE':  f'=IF({den}<=0,0,ROUND(ROUNDUP(ROUND(({bruto}-0.09)*10,6),0)/10+0.09,2))',
-        'B_FED':   f'=ROUND({c["P_BASE"]}*{fed},2)',
-        'B_ICMS':  icms(c['P_BASE']),
-        'B_LUCRO': f'=ROUND({c["P_BASE"]}-{c["C_BASE"]}-{c["B_FED"]}-{c["B_ICMS"]},2)',
+        'P_BASE':  (f'=IF({den}<=0,0,ROUND(ROUNDUP(ROUND(({c["C_BASE"]}/{den}-0.09)*10,6),0)'
+                    f'/10+0.09,2))'),
+        'B_SIMPLES': f'=ROUND({c["P_BASE"]}*{simp},2)',
+        'B_DESP':    f'=ROUND({c["P_BASE"]}*{desp},2)',
+        'B_LUCRO': f'=ROUND({c["P_BASE"]}-{c["C_BASE"]}-{c["B_SIMPLES"]}-{c["B_DESP"]},2)',
 
         'SH_COM_PCT': f'=VLOOKUP({sh},{t["shopee"]},3,TRUE)',
         'SH_COM':     f'=ROUND({sh}*{c["SH_COM_PCT"]},2)',
         'SH_TARIFA':  f'=VLOOKUP({sh},{t["shopee"]},2,TRUE)',
-        'SH_FED':     f'=ROUND({sh}*{fed},2)',
-        'SH_ICMS':    icms(sh),
+        'SH_SIMPLES': f'=ROUND({sh}*{simp},2)',
+        'SH_DESP':    f'=ROUND({sh}*{desp},2)',
         'SH_LUCRO':   (f'=ROUND({sh}-{c["C_BASE"]}-{c["SH_COM"]}-{c["SH_TARIFA"]}'
-                       f'-{c["SH_FED"]}-{c["SH_ICMS"]},2)'),
+                       f'-{c["SH_SIMPLES"]}-{c["SH_DESP"]},2)'),
         'SH_MARGEM':  f'=IF({sh}>0,ROUND({c["SH_LUCRO"]}/{sh},4),0)',
 
         'ML_COM_PCT': f'={v["ML_COM_PCT"]}+VLOOKUP({ml},{t["ml"]},3,TRUE)',
@@ -664,10 +619,10 @@ def _formulas_linha(c, v, t):
         'ML_TARIFA':  f'=IF({ml}>={t["lim"]},0,VLOOKUP({ml},{t["ml"]},2,TRUE))',
         'ML_FRETE_BASE': f'={v["ML_FRETE_BASE"]}',
         'ML_FRETE':   f'=IF({ml}>={t["lim"]},ROUND({c["ML_FRETE_BASE"]}*(1-{v["ML_FRETE"]}),2),0)',
-        'ML_FED':     f'=ROUND({ml}*{fed},2)',
-        'ML_ICMS':    icms(ml),
+        'ML_SIMPLES': f'=ROUND({ml}*{simp},2)',
+        'ML_DESP':    f'=ROUND({ml}*{desp},2)',
         'ML_LUCRO':   (f'=ROUND({ml}-{c["C_BASE"]}-{c["ML_COM"]}-{c["ML_TARIFA"]}-{c["ML_FRETE"]}'
-                       f'-{c["ML_FED"]}-{c["ML_ICMS"]},2)'),
+                       f'-{c["ML_SIMPLES"]}-{c["ML_DESP"]},2)'),
         'ML_MARGEM':  f'=IF({ml}>0,ROUND({c["ML_LUCRO"]}/{ml},4),0)',
         'MELHOR':     f'=IF({c["SH_LUCRO"]}>={c["ML_LUCRO"]},"{MELHOR_SHOPEE}","{MELHOR_ML}")',
     }
@@ -716,7 +671,6 @@ def salvar_excel_marketplace(rows, metricas, M, num_nf, path):
             'NF': row['nf'], 'DESC': row['desc'], 'REF': row['ref'], 'SKU': row['sku'],
             'QTD': row['qtd'], 'CST': str(row['cst']),
             'NF_U': row['nf_u'], 'ST_U': row['st_u'], 'ANT_U': row['ant_u'], 'IPI_U': row['ipi_u'],
-            'TAXA_CRED': row['cred_pct'],
             # Preços sugeridos vêm do Python (a faixa depende do próprio preço) — editáveis
             'SH_PRECO': m['shopee']['preco'], 'ML_PRECO': m['ml']['preco'],
         }

@@ -11,7 +11,7 @@ from openpyxl.utils import get_column_letter
 from tests.conftest import make_row
 from core import marketplace as mkt
 from core.marketplace import (
-    calcular_marketplace, custo_entrada, impostos_venda, taxas_shopee, taxas_ml,
+    calcular_marketplace, custo_entrada, deducoes_venda, taxas_shopee, taxas_ml,
     arredondar_x9_acima, frete_ml_item, montar_params, salvar_excel_marketplace,
     COL_MKT, ML_LIMITE_FRETE,
 )
@@ -25,9 +25,9 @@ def M():
 
 @pytest.fixture
 def M_zero():
-    """Sem impostos, sem margem, multiplicador 1 — isola as taxas de marketplace."""
+    """Sem Simples, despesa nem margem, multiplicador 1 — isola as taxas de marketplace."""
     return {**montar_params({}), 'mult': 1.0, 'frete': 0.0, 'desp': 0.0,
-            'fed': 0.0, 'icm': 0.0, 'margem': 0.0, 'emb': 0.0}
+            'simples': 0.0, 'margem': 0.0, 'emb': 0.0}
 
 
 class TestParams:
@@ -35,7 +35,14 @@ class TestParams:
         assert M['mult'] == pytest.approx(2.0)
         assert M['margem'] == pytest.approx(0.15)
         assert M['com_ml'] == pytest.approx(0.165)
+        assert M['simples'] == pytest.approx(0.15)
+        assert M['desp'] == pytest.approx(0.05)
         assert M['reputacao'] == 'verde'
+
+    def test_despesa_do_varejo_nao_afeta_marketplace(self):
+        # 'desp' é o campo do varejo; o marketplace tem o próprio 'desp_mkt'
+        assert montar_params({'desp': '10'})['desp'] == pytest.approx(0.05)
+        assert montar_params({'desp_mkt': '7'})['desp'] == pytest.approx(0.07)
 
     def test_frete_pct_sobrescreve_formulario(self):
         # NF CIF: gerar_tabela zera o frete e o marketplace deve respeitar
@@ -49,39 +56,44 @@ class TestParams:
 
 
 class TestCustoEntrada:
-    def test_mesma_conta_do_varejo(self, M):
-        # c_real 20; frete 2; desp 2; cred 0.4 → 20 + 2 + 2 − 0.4
+    def test_frete_sobre_custo_real(self, M):
+        # c_real 20; frete 10% de 20 = 2 → 22
         e = custo_entrada(make_row(nf_u=10.0), M)
         assert e['c_real'] == pytest.approx(20.0)
-        assert e['c_ent'] == pytest.approx(23.6)
+        assert e['frete'] == pytest.approx(2.0)
+        assert e['c_ent'] == pytest.approx(22.0)
 
     def test_multiplicador_variavel(self, M):
-        e = custo_entrada(make_row(nf_u=10.0, cred_pct=0.0), {**M, 'mult': 1.5, 'frete': 0, 'desp': 0})
+        e = custo_entrada(make_row(nf_u=10.0), {**M, 'mult': 1.5, 'frete': 0})
         assert e['c_ent'] == pytest.approx(15.0)
 
-    def test_st_zera_credito(self, M):
-        assert custo_entrada(make_row(st_u=1.0, cred_pct=0.12), M)['cred'] == 0.0
+    def test_simples_nao_abate_credito_icms(self, M):
+        # Mesmo com ICMS destacado na NF, Simples Nacional não aproveita crédito
+        com = custo_entrada(make_row(nf_u=10.0, cred_pct=0.12), M)
+        sem = custo_entrada(make_row(nf_u=10.0, cred_pct=0.0), M)
+        assert com['c_ent'] == pytest.approx(sem['c_ent'])
+        assert 'cred' not in com
 
-    def test_ant_nao_zera_credito(self, M):
-        assert custo_entrada(make_row(ant_u=1.0, cred_pct=0.12), M)['cred'] == pytest.approx(1.2)
+    @pytest.mark.parametrize("campo", ['st_u', 'ant_u', 'ipi_u'])
+    def test_st_ant_ipi_somam_no_custo(self, M, campo):
+        e = custo_entrada(make_row(nf_u=10.0, **{campo: 3.0}), {**M, 'frete': 0})
+        assert e['c_ent'] == pytest.approx(23.0)
 
-    @pytest.mark.parametrize("cst", sorted(mkt.CST_SEM_CREDITO))
-    def test_cst_isento_zera_credito(self, M, cst):
-        assert custo_entrada(make_row(cst=cst, cred_pct=0.12), M)['cred'] == 0.0
+    def test_despesa_nao_entra_no_custo(self, M):
+        e = custo_entrada(make_row(nf_u=10.0), {**M, 'frete': 0, 'desp': 0.5})
+        assert e['c_ent'] == pytest.approx(20.0)
 
 
-class TestImpostosVenda:
-    def test_normal(self, M):
-        assert impostos_venda(100.0, make_row(), M) == pytest.approx(9.13 + 20.0)
+class TestDeducoesVenda:
+    def test_simples_e_despesa_sobre_o_preco(self, M):
+        assert deducoes_venda(100.0, M) == (pytest.approx(15.0), pytest.approx(5.0))
 
-    def test_st_sem_icms(self, M):
-        assert impostos_venda(100.0, make_row(st_u=5.0), M) == pytest.approx(9.13)
-
-    def test_ant_abate_icms(self, M):
-        assert impostos_venda(100.0, make_row(ant_u=5.0), M) == pytest.approx(9.13 + 15.0)
-
-    def test_ant_maior_que_icms_nao_fica_negativo(self, M):
-        assert impostos_venda(10.0, make_row(ant_u=50.0), M) == pytest.approx(0.913, abs=0.01)
+    @pytest.mark.parametrize("extra", [{'st_u': 5.0}, {'ant_u': 5.0}])
+    def test_st_e_ant_nao_mudam_o_simples(self, M, extra):
+        # Simples é % único sobre a venda — ST/ANT não zeram nem abatem
+        m = calcular_marketplace(make_row(nf_u=10.0, **extra), M)
+        sh = m['shopee']
+        assert sh['simples'] == pytest.approx(round(sh['preco'] * 0.15, 2))
 
 
 class TestTaxas:
@@ -134,12 +146,20 @@ class TestPrecoSugerido:
         m = calcular_marketplace(make_row(nf_u=12.0), M)
         for canal in ('shopee', 'ml'):
             c = m[canal]
-            assert c['lucro'] == pytest.approx(c['preco'] - m['custo_base'] - c['taxas'] - c['impostos'], abs=0.01)
+            assert c['lucro'] == pytest.approx(
+                c['preco'] - m['custo_base'] - c['taxas'] - c['simples'] - c['desp'], abs=0.01)
 
     def test_sem_margem_nem_imposto_preco_cobre_taxas(self, M_zero):
         # custo 50 na Shopee: P = (50 + 4) / 0.8 = 67.5 → 67.59
         m = calcular_marketplace(make_row(nf_u=50.0, cred_pct=0.0), M_zero)
         assert m['shopee']['preco'] == pytest.approx(67.59)
+
+    def test_preco_com_simples_e_despesa(self, M_zero):
+        # custo 50, Simples 15%, despesa 5%: P = (50 + 4) / (1 − 0.20 − 0.15 − 0.05) = 90
+        # → cai na faixa 80+ (14% + R$16): P = 66 / 0.66 = 100 → faixa 100+ (R$20): 70/0.66 = 106.06
+        m = calcular_marketplace(make_row(nf_u=50.0), {**M_zero, 'simples': 0.15, 'desp': 0.05})
+        assert m['shopee']['preco'] == pytest.approx(106.09)
+        assert m['shopee']['lucro'] >= 0
 
     def test_piso_da_faixa_quando_faixa_anterior_nao_fecha(self, M_zero):
         # custo 61: faixa ≤79,99 pede 81,25 (fora); faixa 80+ pede 90,70 → fica nela
@@ -191,7 +211,7 @@ class TestDetalhamento:
         m = calcular_marketplace(make_row(nf_u=nf_u, ant_u=1.0), M)
         for canal in ('shopee', 'ml'):
             c = m[canal]
-            parcelas = c['comissao'] + c['tarifa'] + c['frete'] + c['fed'] + c['icms']
+            parcelas = c['comissao'] + c['tarifa'] + c['frete'] + c['simples'] + c['desp']
             assert c['lucro'] == pytest.approx(c['preco'] - m['custo_base'] - parcelas, abs=0.01)
 
     def test_ml_acima_de_79_frete_no_lugar_da_tarifa(self, M):
@@ -235,7 +255,7 @@ class TestExcel:
         ws = wb['Marketplace']
         r = mkt.LIN_DADOS
         assert ws.cell(r, COL_MKT['DESC']).value == 'NORMAL'
-        for chave in ('C_REAL', 'C_ENT', 'C_BASE', 'P_BASE', 'B_FED', 'SH_COM', 'SH_LUCRO',
+        for chave in ('C_REAL', 'C_ENT', 'C_BASE', 'P_BASE', 'B_SIMPLES', 'B_DESP', 'SH_COM', 'SH_LUCRO',
                       'ML_COM', 'ML_FRETE', 'ML_LUCRO', 'MELHOR'):
             assert str(ws.cell(r, COL_MKT[chave]).value).startswith('='), chave
         # Preços sugeridos são valores (editáveis), não fórmulas
@@ -244,8 +264,8 @@ class TestExcel:
         assert wb.calculation.fullCalcOnLoad is True
 
     @pytest.mark.parametrize("coluna, chave", [
-        ('C_REAL', 'mult'), ('FRETE', 'frete'), ('DESP', 'desp'), ('EMB', 'emb'),
-        ('MARGEM_ALVO', 'margem'), ('B_FED', 'fed'), ('B_ICMS', 'icm'),
+        ('C_REAL', 'mult'), ('FRETE', 'frete'), ('EMB', 'emb'),
+        ('MARGEM_ALVO', 'margem'), ('B_SIMPLES', 'simples'), ('B_DESP', 'desp'),
         ('ML_COM_PCT', 'com_ml'), ('ML_FRETE_BASE', 'frete_ml'),
     ])
     def test_variavel_no_topo_da_coluna(self, M, coluna, chave):
@@ -260,11 +280,16 @@ class TestExcel:
         letra = get_column_letter(COL_MKT['FRETE'])
         assert f'${letra}${mkt.LIN_VAR}' in f
 
-    def test_impostos_de_canal_espelham_variavel_base(self, M):
+    @pytest.mark.parametrize("base, canais", [
+        ('B_SIMPLES', ('SH_SIMPLES', 'ML_SIMPLES')),
+        ('B_DESP', ('SH_DESP', 'ML_DESP')),
+    ])
+    def test_deducoes_de_canal_espelham_variavel_base(self, M, base, canais):
         wb, _ = _gerar_wb(M, _rows_teste()[:1])
         ws = wb['Marketplace']
-        letra = get_column_letter(COL_MKT['B_FED'])
-        assert ws.cell(mkt.LIN_VAR, COL_MKT['SH_FED']).value == f'=${letra}${mkt.LIN_VAR}'
+        letra = get_column_letter(COL_MKT[base])
+        for canal in canais:
+            assert ws.cell(mkt.LIN_VAR, COL_MKT[canal]).value == f'=${letra}${mkt.LIN_VAR}'
 
     def test_desconto_reputacao_no_topo_do_frete(self):
         M = montar_params({'reputacao_ml': 'amarela'})
@@ -277,7 +302,8 @@ class TestPrevia:
         rows = _rows_teste()
         html_ = mkt.gerar_tabela_marketplace_html(rows, [calcular_marketplace(r, M) for r in rows], M)
         assert 'VARIÁVEIS' in html_
-        assert '9,13%' in html_       # federal
+        assert '15,00%' in html_      # Simples
+        assert '5,00%' in html_       # despesa
         assert '× 2,00' in html_      # multiplicador
         assert '(=) CUSTO ENTRADA' in html_
 
