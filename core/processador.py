@@ -1338,7 +1338,7 @@ def gerar_dashboard_html(rows_data, lucro_total=0.0, metricas=None, num_nf=None)
         var D={cjson}, MAX={max_abs};
         function brl(v){{
           var n=v<0, s=Math.abs(v).toFixed(2).replace('.',',')
-            .replace(/\B(?=(\d{{3}})+(?!\d))/g,'.');
+            .replace(/\\B(?=(\\d{{3}})+(?!\\d))/g,'.');
           return (n?'-':'')+'R$ '+s;
         }}
         window.phUpdate=function(pct){{

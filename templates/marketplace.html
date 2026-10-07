@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Precificação Marketplace</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <style>
+        body {
+            background: linear-gradient(135deg, #fff7ed 0%, #ffffff 100%);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            color: #333;
+            min-height: 100vh;
+        }
+        .main-container {
+            max-width: 1000px;
+            margin: 40px auto;
+            background: rgba(255, 255, 255, 0.92);
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+        }
+        @media (max-width: 640px) { .main-container { margin: 16px; padding: 20px 16px; } }
+        .section-title {
+            font-size: 0.8rem; font-weight: 700; color: #adb5bd;
+            text-transform: uppercase; letter-spacing: 1px;
+            text-align: center; margin: 30px 0 15px 0;
+        }
+        .form-control, .form-select { border-radius: 8px; border: 1px solid #dee2e6; padding: 10px 15px; color: #495057; }
+        .form-control:focus, .form-select:focus { border-color: #f97316; box-shadow: 0 0 0 0.2rem rgba(249,115,22,.2); }
+        label { font-size: 0.85rem; font-weight: 600; color: #6c757d; margin-bottom: 5px; }
+        .input-group-text { background: transparent; color: #adb5bd; font-size: 0.9rem; }
+
+        /* Seletor de modo (igual ao da tela principal) */
+        .mode-toggle { display: inline-flex; background: #f1f5f9; border-radius: 30px; padding: 4px; gap: 4px; margin-top: 12px; }
+        .mode-toggle a { border-radius: 30px; padding: 6px 16px; font-size: 0.8rem; font-weight: 600; color: #64748b; text-decoration: none; }
+        .mode-toggle a.active { background: #fff; color: #ea580c; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+
+        .drop-zone {
+            border: 2px dashed #ced4da; border-radius: 12px; padding: 32px 20px;
+            text-align: center; cursor: pointer; transition: all .3s ease; background: #fff;
+        }
+        .drop-zone:hover, .drop-zone.dragover { border-color: #f97316; background: #fffaf5; }
+        .icon-circle { width: 50px; height: 50px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 12px; font-weight: bold; font-size: .8rem; }
+        .xml-icon { background: #e0f2fe; color: #0284c7; }
+        .csv-icon { background: #dcfce7; color: #16a34a; }
+        .drop-zone-title { font-weight: 700; font-size: 1rem; margin-bottom: 5px; }
+        .drop-zone-sub { font-size: .8rem; color: #adb5bd; }
+
+        .variables-container { border: 1px solid #f1f3f5; border-radius: 12px; padding: 22px 25px; background: #fff; margin-bottom: 14px; }
+        .var-group-title { font-size: .72rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+        .var-group-title .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+
+        .taxas-box { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+        @media (max-width: 640px) { .taxas-box { grid-template-columns: 1fr; } }
+        .taxas-box table { width: 100%; font-size: .78rem; }
+        .taxas-box th { color: #64748b; font-weight: 600; padding: 4px 6px; border-bottom: 1px solid #e2e8f0; }
+        .taxas-box td { padding: 4px 6px; border-bottom: 1px solid #f1f5f9; font-variant-numeric: tabular-nums; }
+        .taxas-card { border-radius: 10px; padding: 12px 14px; }
+
+        .btn-mkt {
+            background-color: #f97316; border: none; border-radius: 30px; padding: 12px 30px;
+            font-weight: 600; color: #fff; transition: all .3s ease;
+            box-shadow: 0 4px 12px rgba(249,115,22,.3);
+        }
+        .btn-mkt:hover { background-color: #ea580c; color: #fff; transform: translateY(-2px); }
+        .btn-mkt:disabled { opacity: .5; transform: none; }
+
+        .steps { display: flex; justify-content: center; gap: 8px; font-size: .75rem; font-weight: 600; color: #94a3b8; margin-top: 18px; flex-wrap: wrap; }
+        .steps span { padding: 4px 12px; border-radius: 20px; background: #f8fafc; }
+        .steps span.on { background: #ffedd5; color: #c2410c; }
+
+        /* Seleção */
+        .sel-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+        .sel-toolbar .form-control { max-width: 320px; padding: 7px 12px; font-size: .85rem; }
+        .sel-count { font-size: .82rem; font-weight: 600; color: #475569; margin-left: auto; }
+        .table-container { overflow: auto; max-height: 460px; border: 1px solid #dee2e6; border-radius: 10px; background: #fff; }
+        .table-container table { white-space: nowrap; margin: 0; }
+        .table thead th { position: sticky; top: 0; background: #f8f9fa; font-size: .75rem; text-transform: uppercase; color: #495057; z-index: 1; }
+        .mkt-table thead tr:nth-child(2) th { top: 29px; }
+        .mkt-table thead tr:nth-child(3) th { top: 58px; }
+        .mkt-table thead tr.mkt-vars th { font-size: .72rem; text-transform: none; text-align: center; }
+        .mkt-table th.mkt-var { background: #E2EFDA; color: #166534; }
+        .mkt-table th.mkt-var-link { background: #F1F5F9; color: #64748b; font-style: italic; font-weight: 500; }
+        .mkt-table th.mkt-var-vazia { background: #f8f9fa; color: #94a3b8; font-size: .65rem; }
+        .table tbody td { font-size: .83rem; vertical-align: middle; font-variant-numeric: tabular-nums; }
+        #sel-table tbody tr { cursor: pointer; }
+        #sel-table tbody tr.off td { color: #94a3b8; }
+        .tag { display: inline-block; font-size: .65rem; font-weight: 700; padding: 1px 7px; border-radius: 10px; margin-left: 6px; }
+        .tag-st { background: #FCE4D6; color: #9a3412; }
+        .tag-ant { background: #D1FAE5; color: #065f46; }
+
+        .dashboard-wrapper { animation: fadeIn .4s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body>
+
+<div class="main-container">
+    <div class="text-center mb-4">
+        <img src="{{ url_for('static', filename='logo.png') }}" alt="Logo" width="60" class="mb-3">
+        <h2 style="color:#1e293b">Precificação para Marketplace</h2>
+        <p class="text-muted" style="font-size:.9rem">Shopee e Mercado Livre: escolha os produtos da nota que vão para o marketplace.</p>
+        <div class="mode-toggle">
+            <a href="/"><i class="bi bi-shop me-1"></i> Loja (Varejo / Atacado)</a>
+            <a href="/marketplace" class="active"><i class="bi bi-bag me-1"></i> Marketplace</a>
+        </div>
+        <div class="steps">
+            <span id="step-1" class="on">1 · Nota e variáveis</span>
+            <span id="step-2">2 · Selecionar produtos</span>
+            <span id="step-3">3 · Preços por marketplace</span>
+        </div>
+    </div>
+
+    <form id="mktForm">
+        <div class="section-title">NOTA FISCAL</div>
+        <div class="row g-3 mb-3">
+            <div class="col-md-6">
+                <label>Nome do Fornecedor</label>
+                <input type="text" class="form-control" name="fornecedor" placeholder="Ex: Fornecedor ABC Ltda" required>
+            </div>
+            <div class="col-md-6">
+                <label>Número da Nota</label>
+                <input type="text" class="form-control" name="nota" placeholder="Ex: 000.123.456" required>
+            </div>
+        </div>
+        <div class="row g-3">
+            <div class="col-md-6">
+                <div class="drop-zone" id="drop-xml" onclick="document.getElementById('file-xml').click()">
+                    <div class="icon-circle xml-icon">XML</div>
+                    <div class="drop-zone-title" id="title-xml">XML da NFe</div>
+                    <div class="drop-zone-sub">Arraste ou clique para selecionar</div>
+                    <input type="file" id="file-xml" accept=".xml" hidden>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="drop-zone" id="drop-csv" onclick="document.getElementById('file-csv').click()">
+                    <div class="icon-circle csv-icon">CSV</div>
+                    <div class="drop-zone-title" id="title-csv">CSV do Sistema</div>
+                    <div class="drop-zone-sub">Arraste ou clique para selecionar</div>
+                    <input type="file" id="file-csv" accept=".csv" hidden>
+                </div>
+            </div>
+        </div>
+
+        <div class="section-title">VARIÁVEIS</div>
+
+        <div class="variables-container">
+            <div class="var-group-title"><span class="dot" style="background:#3b82f6"></span>Custo de entrada (sem crédito de ICMS — Simples Nacional)</div>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label>Multiplicador</label>
+                    <input type="number" step="0.01" class="form-control" name="mult_mkt" value="2.0">
+                </div>
+                <div class="col-md-6">
+                    <label>Frete / Logística (sobre o custo real)</label>
+                    <div class="input-group"><input type="number" step="0.01" class="form-control" name="frete" value="10"><span class="input-group-text">%</span></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="variables-container">
+            <div class="var-group-title"><span class="dot" style="background:#64748b"></span>Venda (sobre o preço de venda de cada canal)</div>
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <label>Simples Nacional</label>
+                    <div class="input-group"><input type="number" step="0.01" class="form-control" name="simples" value="15"><span class="input-group-text">%</span></div>
+                </div>
+                <div class="col-md-3">
+                    <label>Despesas Operacionais</label>
+                    <div class="input-group"><input type="number" step="0.01" class="form-control" name="desp_mkt" value="5"><span class="input-group-text">%</span></div>
+                </div>
+                <div class="col-md-3">
+                    <label>Margem de Lucro Alvo</label>
+                    <div class="input-group"><input type="number" step="0.1" class="form-control" name="margem_mkt" value="15"><span class="input-group-text">%</span></div>
+                </div>
+                <div class="col-md-3">
+                    <label>Embalagem de Envio</label>
+                    <div class="input-group"><span class="input-group-text">R$</span><input type="number" step="0.01" class="form-control" name="emb_mkt" value="0"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="variables-container">
+            <div class="var-group-title"><span class="dot" style="background:#eab308"></span>Mercado Livre (Premium)</div>
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label>Comissão ML</label>
+                    <div class="input-group"><input type="number" step="0.1" class="form-control" name="com_ml" value="16.5"><span class="input-group-text">%</span></div>
+                </div>
+                <div class="col-md-4">
+                    <label>Frete Base ML (a partir de R$ 79)</label>
+                    <div class="input-group"><span class="input-group-text">R$</span><input type="number" step="0.01" class="form-control" name="frete_ml" value="20"></div>
+                </div>
+                <div class="col-md-4">
+                    <label>Reputação</label>
+                    <select class="form-select" name="reputacao_ml">
+                        <option value="verde" selected>Verde (50% de desconto no frete)</option>
+                        <option value="amarela">Amarela (40% de desconto)</option>
+                        <option value="vermelha">Vermelha (paga o frete cheio)</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <details class="variables-container" style="padding:14px 25px">
+            <summary style="font-size:.8rem;font-weight:600;color:#64748b;cursor:pointer">Ver tabelas de taxas usadas</summary>
+            <div class="taxas-box mt-3">
+                <div class="taxas-card" style="background:#fff7ed">
+                    <div class="var-group-title" style="color:#c2410c">Shopee</div>
+                    <table>
+                        <thead><tr><th>Preço</th><th>Tarifa fixa</th><th>Comissão</th></tr></thead>
+                        <tbody>
+                            <tr><td>até R$ 79,99</td><td>R$ 4,00</td><td>20%</td></tr>
+                            <tr><td>R$ 80 a R$ 99,99</td><td>R$ 16,00</td><td>14%</td></tr>
+                            <tr><td>R$ 100 a R$ 199,99</td><td>R$ 20,00</td><td>14%</td></tr>
+                            <tr><td>a partir de R$ 200</td><td>R$ 26,00</td><td>14%</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="taxas-card" style="background:#fefce8">
+                    <div class="var-group-title" style="color:#92400e">Mercado Livre</div>
+                    <table>
+                        <thead><tr><th>Preço</th><th>Além da comissão</th></tr></thead>
+                        <tbody>
+                            <tr><td>até R$ 12,50</td><td>+ 50% do valor do item</td></tr>
+                            <tr><td>R$ 12,51 a R$ 29</td><td>+ R$ 6,25</td></tr>
+                            <tr><td>R$ 29,01 a R$ 50</td><td>+ R$ 6,75</td></tr>
+                            <tr><td>R$ 50,01 a R$ 78,99</td><td>+ R$ 6,75</td></tr>
+                            <tr><td>a partir de R$ 79</td><td>frete (varia com a reputação)</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <p class="text-muted mt-2 mb-0" style="font-size:.75rem">As faixas podem ser editadas na aba <strong>Parâmetros</strong> do Excel gerado.</p>
+        </details>
+
+        <div class="text-center mt-4">
+            <button type="submit" class="btn btn-mkt" id="btn-carregar">
+                <i class="bi bi-list-check me-2"></i> Carregar produtos da nota
+            </button>
+        </div>
+
+        <div id="alert-box" class="alert mt-4 d-none" role="alert"></div>
+    </form>
+
+    <!-- Passo 2: seleção -->
+    <div id="sel-section" class="d-none">
+        <div class="section-title">SELECIONE OS PRODUTOS PARA O MARKETPLACE</div>
+        <div class="sel-toolbar">
+            <input type="search" class="form-control" id="sel-busca" placeholder="Buscar por descrição ou REF">
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="sel-todos">Marcar todos</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="sel-nenhum">Desmarcar todos</button>
+            <span class="sel-count" id="sel-count"></span>
+        </div>
+        <div class="table-container">
+            <table class="table table-sm table-hover" id="sel-table">
+                <thead><tr>
+                    <th style="width:36px"></th><th>Descrição</th><th>REF</th><th>QTD</th>
+                    <th>NF Unit</th><th>C. Entrada</th><th>Shopee (sugerido)</th><th>ML (sugerido)</th>
+                </tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+        <p class="text-muted mt-2" style="font-size:.75rem">Os preços sugeridos usam as variáveis acima. Se mudar alguma variável, os preços finais são recalculados ao gerar.</p>
+        <div class="text-center mt-3">
+            <button type="button" class="btn btn-mkt" id="btn-gerar">
+                <i class="bi bi-rocket-takeoff me-2"></i> <span id="btn-gerar-txt">Gerar precificação</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Passo 3: resultado -->
+    <div id="res-section" class="d-none mt-4">
+        <div class="section-title">PREÇOS POR MARKETPLACE</div>
+        <div class="d-flex align-items-center justify-content-between my-2 flex-wrap gap-2">
+            <span class="badge bg-secondary" style="font-size:.8rem" id="res-badge"></span>
+            <a href="#" id="res-download" class="btn btn-sm btn-success" style="border-radius:20px;font-weight:600;font-size:.82rem">
+                <i class="bi bi-download me-1"></i> Baixar Excel
+            </a>
+        </div>
+        <div class="d-flex gap-3 mb-2" style="font-size:.75rem;flex-wrap:wrap;color:#64748b">
+            <span><span style="display:inline-block;width:12px;height:12px;background:#FCE4D6;border-radius:2px;margin-right:4px;vertical-align:middle"></span>ST</span>
+            <span><span style="display:inline-block;width:12px;height:12px;background:#D1FAE5;border-radius:2px;margin-right:4px;vertical-align:middle"></span>ANT</span>
+            <span><span style="display:inline-block;width:12px;height:12px;background:#E2EFDA;border-radius:2px;margin-right:4px;vertical-align:middle"></span>Variável (editável no Excel)</span>
+            <span>(+) soma · (−) desconta · (=) resultado</span>
+            <span>Margem <strong style="color:#15803d">verde</strong> = atinge a meta · <strong style="color:#dc2626">vermelha</strong> = abaixo</span>
+        </div>
+        <div class="table-container mb-3" id="res-tabela"></div>
+        <div class="dashboard-wrapper" id="res-dashboard"></div>
+    </div>
+</div>
+
+<script>
+    const $ = (id) => document.getElementById(id);
+    const brl = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const esc = (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+    let produtos = [];
+    let contexto = {};
+    const selecionados = new Set();
+
+    // ── Drag & Drop ───────────────────────────────────────────────────────────
+    function setupZone(suffix) {
+        const zone = $('drop-' + suffix), input = $('file-' + suffix), title = $('title-' + suffix);
+        const marcar = () => title.innerHTML = `<i class="bi bi-check-circle-fill text-success"></i> ${esc(input.files[0].name)}`;
+        zone.ondragover  = (e) => { e.preventDefault(); zone.classList.add('dragover'); };
+        zone.ondragleave = ()  => zone.classList.remove('dragover');
+        zone.ondrop = (e) => {
+            e.preventDefault(); zone.classList.remove('dragover');
+            if (e.dataTransfer.files.length) { input.files = e.dataTransfer.files; marcar(); }
+        };
+        input.onchange = () => { if (input.files.length) marcar(); };
+    }
+    setupZone('xml');
+    setupZone('csv');
+
+    function alerta(msg) {
+        const box = $('alert-box');
+        box.className = 'alert alert-danger mt-4';
+        box.innerHTML = `<pre style="white-space:pre-wrap;font-size:.78rem;margin:0">${esc(msg)}</pre>`;
+    }
+
+    function passo(n) {
+        [1, 2, 3].forEach(i => $('step-' + i).classList.toggle('on', i <= n));
+    }
+
+    function paramsForm() {
+        const out = {};
+        for (const [k, v] of new FormData($('mktForm')).entries()) out[k] = v;
+        return out;
+    }
+
+    // ── Passo 1: carregar produtos ────────────────────────────────────────────
+    $('mktForm').onsubmit = async (e) => {
+        e.preventDefault();
+        const xml = $('file-xml').files[0], csv = $('file-csv').files[0];
+        $('alert-box').classList.add('d-none');
+        if (!xml || !csv) { alerta('Selecione os arquivos XML e CSV antes de continuar.'); return; }
+
+        const btn = $('btn-carregar');
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Lendo nota...';
+        btn.disabled = true;
+        try {
+            const fd = new FormData($('mktForm'));
+            fd.append('xml', xml);
+            fd.append('csv', csv);
+            const data = await (await fetch('/marketplace/produtos', { method: 'POST', body: fd })).json();
+            if (!data.sucesso) { alerta(data.erro || 'Erro desconhecido.'); return; }
+
+            produtos = data.produtos;
+            contexto = { num_nf: data.num_nf, fornecedor: data.fornecedor, frete_pct: data.frete_pct };
+            selecionados.clear();
+            produtos.forEach((_, i) => selecionados.add(i));
+            renderSelecao();
+            $('res-section').classList.add('d-none');
+            $('sel-section').classList.remove('d-none');
+            passo(2);
+            $('sel-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } catch (err) {
+            alerta('Erro ao se comunicar com o servidor.');
+        } finally {
+            btn.innerHTML = '<i class="bi bi-list-check me-2"></i> Carregar produtos da nota';
+            btn.disabled = false;
+        }
+    };
+
+    // ── Passo 2: seleção ──────────────────────────────────────────────────────
+    function renderSelecao() {
+        const termo = $('sel-busca').value.trim().toLowerCase();
+        const tbody = document.querySelector('#sel-table tbody');
+        tbody.innerHTML = produtos.map((p, i) => {
+            if (termo && !(`${p.desc} ${p.ref}`.toLowerCase().includes(termo))) return '';
+            const on = selecionados.has(i);
+            const tag = p.tem_st ? '<span class="tag tag-st">ST</span>' : (p.tem_ant ? '<span class="tag tag-ant">ANT</span>' : '');
+            return `<tr data-i="${i}" class="${on ? '' : 'off'}">
+                <td><input type="checkbox" class="form-check-input" ${on ? 'checked' : ''}></td>
+                <td title="${esc(p.desc)}">${esc(p.desc.slice(0, 60))}${tag}</td>
+                <td>${esc(p.ref)}</td><td>${Math.round(p.qtd)}</td>
+                <td>${brl(p.nf_u)}</td><td>${brl(p.c_ent)}</td>
+                <td style="color:#c2410c;font-weight:600">${brl(p.p_shopee)}</td>
+                <td style="color:#92400e;font-weight:600">${brl(p.p_ml)}</td>
+            </tr>`;
+        }).join('');
+        atualizarContador();
+    }
+
+    function atualizarContador() {
+        const n = selecionados.size;
+        $('sel-count').textContent = `${n} de ${produtos.length} selecionado(s)`;
+        $('btn-gerar-txt').textContent = `Gerar precificação (${n} produto${n === 1 ? '' : 's'})`;
+        $('btn-gerar').disabled = n === 0;
+    }
+
+    document.querySelector('#sel-table tbody').addEventListener('click', (e) => {
+        const tr = e.target.closest('tr[data-i]');
+        if (!tr) return;
+        const i = Number(tr.dataset.i);
+        selecionados.has(i) ? selecionados.delete(i) : selecionados.add(i);
+        const on = selecionados.has(i);
+        tr.classList.toggle('off', !on);
+        tr.querySelector('input').checked = on;
+        atualizarContador();
+    });
+
+    // Marcar/desmarcar respeitam o filtro de busca
+    function visiveis() {
+        return [...document.querySelectorAll('#sel-table tbody tr[data-i]')].map(tr => Number(tr.dataset.i));
+    }
+    $('sel-todos').onclick  = () => { visiveis().forEach(i => selecionados.add(i));    renderSelecao(); };
+    $('sel-nenhum').onclick = () => { visiveis().forEach(i => selecionados.delete(i)); renderSelecao(); };
+    $('sel-busca').oninput  = renderSelecao;
+
+    // ── Passo 3: gerar ────────────────────────────────────────────────────────
+    $('btn-gerar').onclick = async () => {
+        const btn = $('btn-gerar');
+        const txt = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Calculando...';
+        btn.disabled = true;
+        $('alert-box').classList.add('d-none');
+        try {
+            const escolhidos = [...selecionados].sort((a, b) => a - b).map(i => produtos[i]);
+            const res = await fetch('/marketplace/gerar', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...contexto, produtos: escolhidos, params: paramsForm() }),
+            });
+            const data = await res.json();
+            if (!data.sucesso) { alerta(data.erro || 'Erro desconhecido.'); $('alert-box').scrollIntoView({ behavior: 'smooth' }); return; }
+
+            $('res-badge').textContent = `${data.total_itens} produto(s) · NF ${contexto.num_nf}`;
+            $('res-download').href = data.download_url;
+            $('res-tabela').innerHTML = data.tabela;
+            $('res-dashboard').innerHTML = data.dashboard;
+            $('res-section').classList.remove('d-none');
+            passo(3);
+            $('res-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } catch (err) {
+            alerta('Erro ao se comunicar com o servidor.');
+        } finally {
+            btn.innerHTML = txt;
+            btn.disabled = selecionados.size === 0;
+        }
+    };
+</script>
+</body>
+</html>

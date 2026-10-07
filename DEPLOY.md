@@ -3,20 +3,50 @@
 ## Visão geral
 
 ```
-Push para main
+PR para main
      │
      ▼
-GitHub Actions (.github/workflows/ci.yml)
-     ├─ FAIL → bloqueia, deploy não acontece
-     └─ PASS
-          │
-          ▼
-     Railway detecta o push
-          └─ nixpacks.toml → Python 3.12 + requirements-server.txt
-               └─ gunicorn app:app
+GitHub Actions (.github/workflows/ci.yml) ── roda pytest no PR
+     │
+     ▼ merge
+Push em main
+     ├─► GitHub Actions roda pytest de novo
+     └─► Render (auto-deploy) ── pip install -r requirements.txt
+                                 └─ gunicorn app:app  (lê gunicorn.conf.py)
 ```
 
-O Railway só recebe o push depois que o código chegou em `main`. Com branch protection ativada, `main` só aceita código que passou nos testes — a sequência CI → deploy é garantida por estrutura, não por configuração extra.
+**Atenção:** o Render faz deploy de todo push em `main` **independente do CI**. O CI só bloqueia o merge se a branch protection estiver ativa (ver abaixo) — sem ela, um código com teste quebrado chega à produção.
+
+---
+
+## Produção — Render
+
+| Item | Valor |
+|------|-------|
+| Serviço | `PH-sheets` (`srv-d81iaof7f7vs73dl5kc0`) — web service, plano **free**, região Ohio |
+| URL | https://ph-sheets.onrender.com |
+| Origem | `PH-importados/PH-sheets`, branch `main`, auto-deploy ligado |
+| Build | `pip install -r requirements.txt` |
+| Start | `gunicorn app:app` — porta, workers e timeout vêm do `gunicorn.conf.py` |
+
+### Limitações do plano free
+
+- **Hiberna após ~15 min sem acesso.** A primeira requisição depois disso leva ~40–50 s (cold start). É normal.
+- **512 MB de RAM** — por isso 2 workers no `gunicorn.conf.py`.
+- **Arquivos temporários:** os Excel gerados ficam no disco efêmero do container. Funcionam para download imediato; somem quando o serviço hiberna ou faz novo deploy — esperado no fluxo gera → baixa na hora.
+
+### Render CLI
+
+```bash
+brew install render
+render login
+render workspace set               # escolhe "Felipe's workspace"
+
+render services                    # lista serviços
+render deploys list srv-d81iaof7f7vs73dl5kc0          # histórico (commit + status)
+render logs -r srv-d81iaof7f7vs73dl5kc0 --limit 100   # logs da aplicação
+render deploys create srv-d81iaof7f7vs73dl5kc0        # força um deploy do main atual
+```
 
 ---
 
@@ -24,90 +54,54 @@ O Railway só recebe o push depois que o código chegou em `main`. Com branch pr
 
 | Arquivo | Função |
 |---------|--------|
-| `.github/workflows/ci.yml` | Roda `pytest` a cada push/PR em `main` |
-| `Procfile` | Instrui o Railway a iniciar com gunicorn na porta dinâmica `$PORT` |
-| `requirements.txt` | Usado pelo Railway no build (detectado automaticamente) |
-| `requirements-server.txt` | Usado pelo CI — versão limpa sem PyInstaller, Pillow, macholib |
+| `.github/workflows/ci.yml` | Roda `pytest` (Python 3.12) em todo push/PR para `main` |
+| `gunicorn.conf.py` | Porta (`$PORT`), 2 workers e timeout de 120 s — lido automaticamente pelo gunicorn |
+| `requirements.txt` | Usado pelo Render no build |
+| `requirements-server.txt` | Usado pelo CI — versão enxuta, sem PyInstaller/Pillow/macholib |
 
----
-
-## Por que numpy 2.x e pandas 2.2.3
-
-O projeto usa Python 3.14 localmente (macOS). O Railway usa Python 3.13 via `mise` — essa versão não pode ser alterada por `nixpacks.toml` ou variáveis de ambiente; o Railway ignora essas configurações.
-
-`numpy==1.26.4` e `pandas==2.2.1` não têm wheels pré-compiladas para Python 3.13 — o pip tenta compilar do fonte e falha. As versões `numpy==2.2.4` e `pandas==2.2.3` têm wheels `cp313` no PyPI e instalam sem compilação.
-
----
-
-## GitHub Actions — CI
-
-**Arquivo:** `.github/workflows/ci.yml`
-
-Dispara em: push ou PR para `main`.
-
-Passos:
-1. Checkout do código
-2. Setup Python 3.12 (com cache de pip via `requirements-server.txt`)
-3. `pip install -r requirements-server.txt pytest pytest-cov`
-4. `python -m pytest tests/ -v --tb=short`
-
-Se qualquer teste falhar, o job falha e o merge/push é bloqueado (se branch protection estiver ativa).
+Por que timeout de 120 s: o padrão do gunicorn é 30 s, e uma nota grande com consulta à API SEFAZ (timeout de 10 s por chamada) pode passar disso — o worker seria morto no meio do processamento.
 
 ---
 
 ## Branch protection (configurar uma vez no GitHub)
 
-Acesse: **GitHub → Settings → Branches → Add rule → `main`**
+**GitHub → Settings → Branches → Add rule → `main`**
 
-Marcar:
-- [x] Require status checks to pass before merging
-  - Status check: `test`
+- [x] Require a pull request before merging
+- [x] Require status checks to pass before merging → status check: `test`
 - [x] Require branches to be up to date before merging
-
-Com isso, ninguém consegue fazer merge para `main` sem passar nos testes — nem via PR nem via push direto.
 
 ---
 
 ## Variáveis de ambiente
 
-Nenhuma variável obrigatória para o servidor funcionar. A aplicação não usa secrets, banco de dados nem API keys fixas.
+Nenhuma obrigatória. A aplicação não usa secrets, banco de dados nem API keys fixas — a API SEFAZ AL é chamada com a chave da NFe enviada pelo usuário em cada requisição. `PORT` é injetada pelo próprio Render.
 
-A única API externa (SEFAZ AL) é chamada com a chave da NFe enviada pelo usuário em cada requisição — sem credenciais armazenadas no servidor.
-
-Se precisar adicionar variáveis no futuro: **Railway → projeto → Variables**.
+Se precisar adicionar: **Render → PH-sheets → Environment**.
 
 ---
 
-## Limitações do ambiente de produção
-
-**Arquivos temporários:** os Excel gerados ficam em `/tmp` do container Railway. Funcionam para download imediato após o processamento. Se a instância reiniciar (deploy novo, crash, idle), os arquivos somem — isso é esperado dado o fluxo de uso (gera → baixa na hora).
-
-**Upload:** limite de 10 MB por requisição (`MAX_CONTENT_LENGTH` em `app.py`). XMLs de NFe raramente passam de 1 MB, então é seguro.
-
-**Workers:** 2 workers gunicorn + timeout de 120s. O processamento paralelo de até 3 lotes usa `ThreadPoolExecutor` dentro do worker — adequado para o volume esperado.
-
----
-
-## Fluxo de trabalho diário
+## Fluxo de trabalho
 
 ```bash
-# Desenvolvimento normal
-git checkout -b feature/minha-mudanca
+git checkout -b feat/minha-mudanca
 # ... edita código ...
 python -m pytest tests/ -v          # roda local antes de abrir PR
-git push origin feature/minha-mudanca
-# Abre PR → CI roda automaticamente → merge → Railway deploya
+git push -u origin feat/minha-mudanca
+# Abre PR → CI roda → aprova/merge → Render deploya sozinho (~2–3 min)
+render deploys list srv-d81iaof7f7vs73dl5kc0   # confere se ficou "live"
 ```
 
-```bash
-# Hotfix urgente direto na main (requer desabilitar branch protection temporariamente)
-git commit -m "fix: ..."
-git push origin main
-# CI roda → Railway deploya em ~2 min
-```
+---
+
+## Histórico
+
+- **Mar/2026** — distribuição por executável PyInstaller (`.app`/`.exe`), gerado e entregue manualmente. Ver README.
+- **Abr/2026** — tentativa no Railway (plano trial). Funcionou em 10/04 e foi desativado ao fim do trial; não recebe mais deploys.
+- **Mai/2026 →** — Render (plano free), produção atual.
 
 ---
 
 ## Repositório
 
-`git@github.com:FelipeLFirmino/PH-sheets.git`
+`git@github.com:PH-importados/PH-sheets.git`

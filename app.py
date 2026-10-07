@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, render_template, request, jsonify, send_file
 
 from core.processador import gerar_tabela, salvar_excel_estilizado, gerar_dashboard_html, cor_cred, CST_SEM_CREDITO
+from core import marketplace as mkt
 
 
 def _arredondar_x9(val):
@@ -275,6 +276,81 @@ def download(filename):
     if not caminho.startswith(os.path.realpath(TEMP_DIR) + os.sep):
         return jsonify({'erro': 'Arquivo inválido.'}), 400
     return send_file(caminho, as_attachment=True)
+
+
+# ─── Modo Marketplace (Shopee / Mercado Livre) ───────────────────────────────
+@app.route('/marketplace')
+def marketplace():
+    return render_template('marketplace.html')
+
+
+@app.route('/marketplace/produtos', methods=['POST'])
+def marketplace_produtos():
+    """Passo 1: lê XML + CSV e devolve os produtos da nota para seleção."""
+    try:
+        form = request.form.to_dict()
+        xml_file = request.files.get('xml')
+        csv_file = request.files.get('csv')
+        if not xml_file or not csv_file:
+            return jsonify({'sucesso': False, 'erro': 'Selecione os arquivos XML e CSV.'})
+
+        xml_path = os.path.join(TEMP_DIR, 'mkt_nfe_temp.xml')
+        csv_path = os.path.join(TEMP_DIR, 'mkt_sys_temp.csv')
+        xml_file.save(xml_path)
+        csv_file.save(csv_path)
+
+        fornecedor = form.get('fornecedor', 'FORNECEDOR').strip() or 'FORNECEDOR'
+        nota       = form.get('nota', '000').strip() or '000'
+        # gerar_tabela usa mult_var na detecção de embalagem → multiplicador do marketplace
+        params = {**form, 'mult_var': form.get('mult_mkt', 2.0)}
+        sucesso, resultado = gerar_tabela(xml_path, csv_path, fornecedor, nota, params)
+        if not sucesso:
+            return jsonify({'sucesso': False, 'erro': resultado})
+
+        rows, P, num_nf = resultado
+        M = mkt.montar_params(form, frete_pct=P['frete'])
+        produtos = []
+        for row in rows:
+            r = mkt.row_para_json(row)
+            m = mkt.calcular_marketplace(r, M)
+            produtos.append({**r, 'c_ent': m['c_ent'],
+                             'p_shopee': m['shopee']['preco'], 'p_ml': m['ml']['preco']})
+
+        return jsonify({'sucesso': True, 'produtos': produtos, 'num_nf': num_nf,
+                        'fornecedor': fornecedor, 'frete_pct': P['frete']})
+    except Exception:
+        import traceback
+        return jsonify({'sucesso': False, 'erro': traceback.format_exc()})
+
+
+@app.route('/marketplace/gerar', methods=['POST'])
+def marketplace_gerar():
+    """Passo 2: precifica só os produtos selecionados e gera Excel + prévia + dashboard."""
+    try:
+        dados = request.get_json(force=True) or {}
+        rows = [mkt.row_de_json(r) for r in dados.get('produtos', [])]
+        if not rows:
+            return jsonify({'sucesso': False, 'erro': 'Selecione ao menos um produto.'})
+
+        M = mkt.montar_params(dados.get('params', {}), frete_pct=dados.get('frete_pct'))
+        metricas = [mkt.calcular_marketplace(r, M) for r in rows]
+
+        fornecedor = str(dados.get('fornecedor', 'FORNECEDOR'))
+        num_nf     = str(dados.get('num_nf', '000'))
+        nome_seguro = ''.join(ch if ch.isalnum() else '_' for ch in fornecedor)
+        nome_excel = f"Marketplace_{nome_seguro}_NF_{''.join(ch for ch in num_nf if ch.isalnum())}.xlsx"
+        mkt.salvar_excel_marketplace(rows, metricas, M, num_nf, os.path.join(TEMP_DIR, nome_excel))
+
+        return jsonify({
+            'sucesso':      True,
+            'tabela':       mkt.gerar_tabela_marketplace_html(rows, metricas, M),
+            'dashboard':    mkt.gerar_dashboard_marketplace_html(rows, metricas, M, num_nf=num_nf),
+            'download_url': f'/download/{nome_excel}',
+            'total_itens':  len(rows),
+        })
+    except Exception:
+        import traceback
+        return jsonify({'sucesso': False, 'erro': traceback.format_exc()})
 
 
 def open_browser():
