@@ -51,6 +51,11 @@ _PATTERN_EMB_IP = re.compile(
     re.IGNORECASE
 )
 
+# Unidades comerciais que indicam que a NF já é por peça (vUnCom = preço de 1 unidade).
+# Nesse caso o IP-N do nome do sistema é só a caixa de transporte — não divide.
+# Ex: Bambola "BONECA TITI CANTIGAS - IP-12 TRB" com uCom=PC, vUnCom=6.60 (NF 57472).
+_UCOM_UNITARIO = {'UN', 'UND', 'UNID', 'UNIDADE', 'PC', 'PÇ', 'PCS', 'PECA', 'PEÇA', 'PECAS', 'PEÇAS'}
+
 # ─── Mapeamento de colunas (1-based) ─────────────────────────────────────────
 #
 # FLUXO VAREJO:
@@ -355,11 +360,13 @@ def parear_impostos_api(itens_xml: list, dados_api: list) -> dict:
     return resultados
 
 
-def extrair_qtd_embalagem(desc_xml, v_un_xml, p_sys, mult, desc_sys=''):
+def extrair_qtd_embalagem(desc_xml, v_un_xml, p_sys, mult, desc_sys='', u_com=''):
     # Padrão 0 — "IP-N" (itens por pacote): "IP-18 TRB", "IP-120 TRB"
     # Tentado primeiro em ambas as descrições (XML e sistema) pois é inequívoco.
     # Útil quando o XML está truncado e o count só aparece no NOME do sistema.
-    for desc in (desc_xml, desc_sys or ''):
+    # Pulado quando a NF já vende por peça (uCom=PC/UN) — IP-N vira só info de caixa.
+    ip_descs = () if str(u_com).strip().upper() in _UCOM_UNITARIO else (desc_xml, desc_sys or '')
+    for desc in ip_descs:
         m0 = _PATTERN_EMB_IP.search(desc)
         if m0:
             qtd = int(m0.group(1))
@@ -497,6 +504,7 @@ def gerar_tabela(xml_path, csv_path, fornecedor, nota_ref, params):
                 'ean_xml':  ean_xml,
                 'ref_xml':  limpar_str(get_xml_text(p, 'nfe:cProd', ns)),
                 'desc_xml': desc_xml,
+                'uCom':     get_xml_text(p, 'nfe:uCom', ns, ""),
                 'qCom':     float(get_xml_text(p, 'nfe:qCom',   ns, "1")),
                 'vUnCom':   float(get_xml_text(p, 'nfe:vUnCom', ns, "0")),
                 'vProd':    float(get_xml_text(p, 'nfe:vProd',  ns, "0")),
@@ -574,7 +582,7 @@ def gerar_tabela(xml_path, csv_path, fornecedor, nota_ref, params):
                       else r['ean_xml'], axis=1)
         df_base.loc[:, 'qtd_emb']   = df_base.apply(
             lambda r: extrair_qtd_embalagem(r['desc_xml'], r['vUnCom'], r['preco_sys'], P_MULT,
-                                            str(r['nome_sys'])),
+                                            str(r['nome_sys']), str(r['uCom'])),
             axis=1)
 
         rows = []

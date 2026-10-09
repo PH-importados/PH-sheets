@@ -273,6 +273,20 @@ class TestPadraoIP:
         # IP-500 numa caixa de R$2 → unitário R$0.004 < R$0.10 → retorna 1
         assert extrair_qtd_embalagem("PRODUTO IP-500", 2.0, 5.0, 2.0) == 1
 
+    # REGRESSÃO (NF 57472 / Bambola): uCom=PC, vUnCom=6.60 já é preço por boneca.
+    # "IP-12 TRB" no NOME do sistema é só a caixa de transporte — dividia por 12
+    # e o marketplace precificava a boneca sobre R$0.55.
+    @pytest.mark.parametrize("u_com", ['PC', 'UN', 'UND', 'pc', ' UN '])
+    def test_ip_ignorado_quando_ucom_unitario(self, u_com):
+        assert extrair_qtd_embalagem(
+            "BONECA TITI CANTIGAS", 6.60, 49.99, 2.0,
+            "BONECA TITI CANTIGAS - IP-12 TRB REF 904", u_com) == 1
+
+    @pytest.mark.parametrize("u_com", ['CAIXAS', 'CX', ''])
+    def test_ip_mantido_quando_ucom_caixa(self, u_com):
+        desc_sys = "LJ-001 - REF MON04 - BLOCOS DE MONTAR - IP-18 TRB"
+        assert extrair_qtd_embalagem("BLOCOS DE MONTAR", 369.85, 50.0, 2.0, desc_sys, u_com) == 18
+
     def test_sem_ip_sem_desc_sys(self):
         # Nenhum dos dois tem IP → cai para outros padrões / retorna 1
         assert extrair_qtd_embalagem("PRODUTO GENERICO SEM CONTAGEM", 50.0, 25.0, 2.0) == 1
